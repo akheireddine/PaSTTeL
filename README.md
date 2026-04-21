@@ -26,4 +26,9 @@ Examples:
   ./bin/pasttel -t both -s cvc5 -v input.json
 ```
 
+# Authors
+	- Anissa.kheireddine@dowsers.finance (DOWSERS)
+	- Souheib.baarir@dowsers.finance (DOWSERS)
+	- Hugo@dowsers.finance (DOWSERS)
+
 
