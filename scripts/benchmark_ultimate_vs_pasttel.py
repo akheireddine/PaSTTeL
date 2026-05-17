@@ -9,7 +9,10 @@ Usage:
     python3 scripts/benchmark_ultimate_vs_pasttel.py \
         --input-dir /path/to/lasso_traces/ \
         --pasttel-bin ./bin/pasttel \
-        --output results.csv
+        --output results.csv \
+        --solver z3
+        --strat both
+        --cpus 2
 """
 
 import argparse
@@ -26,23 +29,71 @@ import sys
 # Algo NAME MAPPING
 # =============================================================================
 
-PASTTEL_ALGO_MAP = {
-    "RankingBased(AffineTemplate)": "Affine template",
-    "RankingBased(NestedTemplate)": "Nested template",
-    "RankingBased(LexicographicTemplate)": "Lexicographic Template",
-    "FixpointTechnique": "Fixpoint",
-    "Fixpoint": "Fixpoint",
-    "GeometricTechnique": "GNTA",
-    "GeometricL(3)": "GNTA",
-    "GeometricL(1)": "GNTA",
-    "Unknown": None,  # skip unknown entries
-}
-
 
 def normalize_european_float(s):
     """Convert European decimal separator (comma) to dot."""
     return s.replace(",", ".")
+    
+def _ranking_type_ultimate_to_algo(template_name):
+    """Convert a 'Ranking function type' raw string to a display name.
 
+    Handles both simple types (affine, nested) and prefixed ones
+    (2-phase, 4-nested, 2-lex, …).
+    """
+    name = template_name.strip().lower()
+
+    # Strip optional numeric prefix to find the base type
+    # e.g. "4-nested" → prefix="4", base="nested"
+    #      "2-phase"  → prefix="2", base="phase"
+    #      "2-lex"    → prefix="2", base="lex"
+    #      "affine"   → prefix=None, base="affine"
+    m = re.match(r'^(\d+)-(.+)$', name)
+    if m:
+        prefix = m.group(1)
+        base   = m.group(2)
+    else:
+        prefix = None
+        base   = name
+
+    BASE_MAP = {
+        "affine":        "Affine Template",
+        "nested":        "Nested Template",
+        "lex":           "Lexicographic Template",
+        "lexicographic": "Lexicographic Template",
+        "phase":         "Phase Template",
+    }
+
+    base_label = BASE_MAP.get(base, base.capitalize() + " Template")
+
+    if prefix:
+        return f"{prefix}-{base_label}"   # e.g. "4-Nested Template"
+    return base_label                     # e.g. "Affine Template"
+
+
+def _pasttel_algo_name(raw_name):
+    """Normalize a PaSTTeL technique name into a canonical display name.
+
+    Examples:
+        RankingBased(AffineTemplate)        -> "Affine Template"
+        RankingBased(4-NestedTemplate)      -> "4-Nested Template"
+        RankingBased(LexicographicTemplate) -> "Lexicographic Template"
+        FixpointTechnique / Fixpoint        -> "Fixpoint"
+        GeometricTechnique / GeometricL(N)  -> "GNTA"
+    """
+    # RankingBased(...): extract inner name and insert space before "Template"
+    m = re.match(r'RankingBased\((.+)\)', raw_name)
+    if m:
+        inner = m.group(1)  # e.g. "AffineTemplate" or "4-NestedTemplate"
+        # Insert a space before "Template" suffix
+        return re.sub(r'([A-Za-z\d])Template$', r'\1 Template', inner)
+
+    if raw_name in ("Fixpoint", "FixpointTechnique"):
+        return "Fixpoint"
+
+    if raw_name.startswith("Geometric"):
+        return "GNTA"
+
+    return raw_name
 
 
 def sanitize_identifier(s):
@@ -202,14 +253,36 @@ def parse_vars_mapping(text):
 
 
 def parse_list(text):
-    """Parse 'AuxVars[v1, v2]' or 'AssignedVars[v1, v2]' into a list."""
-    m = re.search(r'\[(.*)\]', text)
+    """Parse 'AuxVars[v1, v2]' or 'AssignedVars[v1, v2]' into a list.
+
+    Handles variable names containing commas inside |...| quoted identifiers,
+    e.g. |v_arrayCell[base_2, (+ offset_2 loopctr_10)]_1|.
+    """
+    m = re.search(r'\[(.*)\]', text, re.DOTALL)
     if not m:
         return []
     content = m.group(1).strip()
     if not content:
         return []
-    return [x.strip() for x in content.split(",") if x.strip()]
+    # Split on commas that are outside |...| pipe-quoted tokens
+    items = []
+    current = []
+    in_pipes = False
+    for ch in content:
+        if ch == '|':
+            in_pipes = not in_pipes
+            current.append(ch)
+        elif ch == ',' and not in_pipes:
+            token = ''.join(current).strip()
+            if token:
+                items.append(token)
+            current = []
+        else:
+            current.append(ch)
+    token = ''.join(current).strip()
+    if token:
+        items.append(token)
+    return items
 
 
 def parse_transformula_block(lines):
@@ -285,16 +358,20 @@ def parse_preprocessed_linear_trace_section(lines, start_idx):
         formula = fields.get("Formula", "").strip()
         invars_text = fields.get("InVars", "").strip()
         outvars_text = fields.get("OutVars", "").strip()
+        auxvars_text = fields.get("AuxVars", "").strip()
+        assigned_text = fields.get("AssignedVars", "").strip()
         if not formula:
             return None
         in_vars = parse_vars_mapping("{" + invars_text.strip("{}") + "}") if invars_text else {}
         out_vars = parse_vars_mapping("{" + outvars_text.strip("{}") + "}") if outvars_text else {}
+        aux_vars = parse_list("[" + auxvars_text.strip("[]") + "]") if auxvars_text else []
+        assigned_vars = parse_list("[" + assigned_text.strip("[]") + "]") if assigned_text else []
         return {
             "formula": formula,
             "in_vars": in_vars,
             "out_vars": out_vars,
-            "aux_vars": [],
-            "assigned_vars": [],
+            "aux_vars": aux_vars,
+            "assigned_vars": assigned_vars,
         }
 
     current_field = None  # which field we are accumulating
@@ -336,8 +413,8 @@ def parse_preprocessed_linear_trace_section(lines, start_idx):
         if current is None:
             continue
 
-        # Named field line: "  Formula:  ..." / "  InVars:   ..." / "  OutVars:  ..."
-        m = re.match(r'\s+(Formula|InVars|OutVars)\s*:\s*(.*)', line)
+        # Named field line: "  Formula:  ..." / "  InVars:   ..." / "  OutVars:  ..." / "  AuxVars:  ..." / "  AssignedVars:  ..."
+        m = re.match(r'\s+(Formula|InVars|OutVars|AuxVars|AssignedVars)\s*:\s*(.*)', line)
         if m:
             current_field = m.group(1)
             current_fields[current_field] = m.group(2)
@@ -537,13 +614,20 @@ def parse_ultimate_trace(filepath, check_mode="lasso", parse_mode="normal"):
             fixpoint_check_result = m.group(1).strip()
             break
 
-    # --- Parse fixpoint check time (always, for the dedicated column) ---
+    # --- Parse timing breakdown (always, for dedicated columns) ---
     fixpoint_time_ms = 0.0
+    termination_time_ms = 0.0
+    nontermination_time_ms = 0.0
     for line in lines:
         m = re.search(r'Fixpoint check time:\s+([\d,]+)\s*ms', line)
         if m:
             fixpoint_time_ms = float(normalize_european_float(m.group(1)))
-            break
+        m = re.search(r'Termination analysis:\s+([\d,]+)\s*ms', line)
+        if m:
+            termination_time_ms = float(normalize_european_float(m.group(1)))
+        m = re.search(r'Nontermination analysis:\s+([\d,]+)\s*ms', line)
+        if m:
+            nontermination_time_ms = float(normalize_european_float(m.group(1)))
 
     # --- Parse timing and algorithm ---
     time_ms = 0.0
@@ -583,19 +667,13 @@ def parse_ultimate_trace(filepath, check_mode="lasso", parse_mode="normal"):
             if m:
                 time_ms = float(normalize_european_float(m.group(1)))
                 break
-        # Find which template succeeded
+	# Find which template succeeded
         for line in lines:
-            m = re.search(r'Template:\s+(\w+).*Satisfiability:\s+sat', line)
+            # [\w\-]+ captures both simple names ("affine") and
+            # dash-prefixed ones ("4-nested", "2-phase", "2-lex")
+            m = re.search(r'Ranking function type:\s+([\w\-]+)', line)
             if m:
-                template_name = m.group(1).strip()
-                if template_name == "affine":
-                    algo = "Affine template"
-                elif template_name == "nested":
-                    algo = "Nested template"
-                elif template_name == "lexicographic":
-                    algo = "Lexicographic Template"
-                else:
-                    algo = template_name.capitalize() + " template"
+                algo = _ranking_type_ultimate_to_algo(m.group(1))
                 break
 
     # --- Compute size ---
@@ -616,6 +694,8 @@ def parse_ultimate_trace(filepath, check_mode="lasso", parse_mode="normal"):
         "stem_size": stem_size,
         "loop_size": loop_size,
         "fixpoint_time_ms": fixpoint_time_ms,
+        "termination_time_ms": termination_time_ms,
+        "nontermination_time_ms": nontermination_time_ms,
         "variables": variables,
         "stem": stem_data,
         "loop": loop_data,
@@ -748,7 +828,7 @@ def convert_to_json(parsed):
 # RUN PASTTEL
 # =============================================================================
 
-def run_pasttel(json_path, pasttel_bin, cpus=2, timeout_s=60, strat="terminate"):
+def run_pasttel(json_path, pasttel_bin, cpus=2, timeout_s=60, strat="terminate", solver="z3"):
     """Run the pasttel binary on a JSON file and parse results.
 
     Returns dict with:
@@ -756,7 +836,7 @@ def run_pasttel(json_path, pasttel_bin, cpus=2, timeout_s=60, strat="terminate")
         time_ms: float
         algo: str
     """
-    cmd = [pasttel_bin, "-a", strat, "-c", str(cpus), "-s", "z3", json_path]
+    cmd = [pasttel_bin, "-a", strat, "-c", str(cpus), "-s", solver, json_path]
 
     try:
         proc = subprocess.run(
@@ -797,27 +877,21 @@ def run_pasttel(json_path, pasttel_bin, cpus=2, timeout_s=60, strat="terminate")
     if m:
         time_ms = float(m.group(1)) * 1000.0  # convert s to ms
 
-    # Parse which technique succeeded
+    # Parse which technique succeeded.
+    # Output format: "RankingBased(AffineTemplate)   TERMINATING   0.042"
+    # We scan for the first non-header line that contains TERMINATING or NON-TERM.
     algo = "-"
-    # Look for technique lines with TERMINATING or NON-TERM result
-    # Format: "Fixpoint                      NON-TERM       0.002       "
-    # The technique name is the first whitespace-delimited token on lines
-    # containing TERMINATING or NON-TERM (but not header/separator lines)
     for line in output.split("\n"):
         stripped = line.strip()
-        # Skip header lines, separator lines, and OVERALL RESULT line
         if not stripped or stripped.startswith("---") or stripped.startswith("="):
             continue
         if stripped.startswith("Technique") or stripped.startswith("OVERALL"):
             continue
         if "TERMINATING" in stripped or "NON-TERM" in stripped:
-            parts = stripped.split()
-            if len(parts) >= 2:
-                raw_name = parts[0]
-                mapped = PASTTEL_ALGO_MAP.get(raw_name)
-                if mapped is not None:
-                    algo = mapped
-                    break
+            # First token is the technique name (may contain parentheses, no spaces)
+            raw_name = stripped.split()[0]
+            algo = _pasttel_algo_name(raw_name)
+            break
 
     return {"result": result, "time_ms": time_ms, "algo": algo}
 
@@ -856,6 +930,39 @@ def determine_algo(ultimate, pasttel):
 # SCATTER PLOT GENERATION
 # =============================================================================
 
+def parse_float(s):
+    """Parse a float from a string that may use comma as decimal separator
+    and/or be wrapped in quotes."""
+    s = s.strip().strip('"').replace(",", ".")
+    if s == "-" or s == "":
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+PASTTEL_SUPPORTED_TERM_ALGOS = {
+    "Affine Template",
+    "Nested Template",
+}
+
+def _ultimate_algo_is_supported_by_pasttel(u_algo_raw):
+    """Return True if the Ultimate termination algorithm is implemented by PaSTTeL.
+
+    PaSTTeL only supports Affine and Nested templates for termination.
+    Lex, Phase, n-Phase, n-Lex, … are NOT supported.
+    n-Nested (e.g. 4-nested) IS supported because PaSTTeL has NestedTemplate.
+    """
+    name = u_algo_raw.strip().lower()
+    # Strip optional numeric prefix: "4-nested" → base="nested"
+    m = re.match(r'^(\d+)-(.+)$', name)
+    base = m.group(2) if m else name
+    # Also strip " template" suffix for already-normalised display labels
+    base = re.sub(r'\s+template$', '', base).strip()
+    return base in ("affine", "nested")
+
+
 def generate_scatter_plot(csv_path, output_html, timeout_s=60, log_scale=False):
     """Read the benchmark CSV and generate an interactive HTML scatter plot.
 
@@ -863,8 +970,10 @@ def generate_scatter_plot(csv_path, output_html, timeout_s=60, log_scale=False):
       - Green:  both agree TERMINATING
       - Blue:   both agree NONTERMINATING
       - Orange: PaSTTeL timeout (no answer within time limit)
-      - Red:    contradiction — Ultimate says TERMINATING but PaSTTeL does not
-      - Purple: NOT SUPPORTED — PaSTTeL does not handle this trace type
+      - Red:    contradiction — Ultimate says TERMINATING (with a supported algo)
+                but PaSTTeL does not agree
+      - Purple: NOT SUPPORTED — Ultimate TERMINATING with an algo not implemented
+                by PaSTTeL (lex, phase, n-phase…) AND PaSTTeL returns UNKNOWN
 
     When PaSTTeL times out or is not supported, a PAR-2 penalty time
     (timeout * 2) is used on the Y axis.
@@ -896,87 +1005,120 @@ def generate_scatter_plot(csv_path, output_html, timeout_s=60, log_scale=False):
 
     for row in rows:
         result = row["Result Code"].strip()
-        u_time_str = row["Ultimate (ms)"].strip()
+
         t_time_str = row["pasttel (ms)"].strip()
         name = row["Trace Name"].strip()
         algo = row.get("Algo", "").strip()
         pasttel_status = row.get("PaSTTeL Status", "").strip()
 
+        # Determine Ultimate algo (left part of "UltimateAlgo / PaSTTeLAlgo")
+        algo_parts = [p.strip() for p in algo.split("/")] if "/" in algo else [algo]
+        u_algo = algo_parts[0].strip().lower()
+        u_algo_raw = algo_parts[0].strip()  # raw form for support check
+
+        # Use the most relevant Ultimate time for the X axis
+        if result == "TERMINATING":
+            u_time_str = row.get("Termination (ms)", "-").strip()
+            col_name = "Term"
+        elif result == "NONTERMINATING":
+            if "fixpoint" in u_algo:
+                u_time_str = row.get("Fixpoint (ms)", "-").strip()
+                col_name = "Fixpoint"
+            else:
+                # GNTA and others → Nontermination (ms)
+                u_time_str = row.get("Nontermination (ms)", "-").strip()
+                col_name = "Nonterm"
+        else:
+            u_time_str = row.get("Fixpoint (ms)", "-").strip()
+            col_name = "Fixpoint"
+
         # Skip infeasible / unchecked / Ultimate-unknown
         if result in ("INFEASIBLE", "UNCHECKED", "UNKNOWN"):
             continue
         # Skip rows where Ultimate has no time
-        if u_time_str == "-":
+        if u_time_str.strip().strip('"') == "-" or u_time_str.strip().strip('"') == "":
             continue
 
         u_verdict = result  # Ultimate is ground truth for Result Code
 
-        # Derive PaSTTeL verdict from the algo column
-        algo_parts = [p.strip() for p in algo.split("/")] if "/" in algo else [algo]
+        # Derive PaSTTeL verdict from the algo column (right part)
         t_algo = algo_parts[-1] if len(algo_parts) >= 2 else ""
         t_verdict = verdict_from_algo(t_algo) if t_algo else "UNKNOWN"
+
+        # Prioritize the dedicated PaSTTeL Status column for verdict
+        if pasttel_status in ("TERMINATING", "NONTERMINATING"):
+            t_verdict = pasttel_status
 
         # Determine PaSTTeL status (use dedicated column when available)
         if pasttel_status:
             p_status = pasttel_status
-        elif t_time_str == "-":
+        elif t_time_str.strip().strip('"') == "-":
             p_status = "UNKNOWN"
         else:
             p_status = t_verdict
 
         # Compute times (PAR-2 penalty when PaSTTeL has no answer)
-        try:
-            ux = float(u_time_str)
-            ty = float(t_time_str) if t_time_str != "-" else par2_ms
-        except ValueError:
+        ux = parse_float(u_time_str)
+        ty_raw = parse_float(t_time_str)
+
+        if ux is None:
             continue
+        ty = ty_raw if ty_raw is not None else par2_ms
+
+        # NOT SUPPORTED: Ultimate TERMINATING with an algo not implemented by
+        # PaSTTeL (lex, phase, n-phase, …) AND PaSTTeL returns UNKNOWN.
+        # If PaSTTeL still found TERMINATING independently, keep it green.
+        u_algo_supported = _ultimate_algo_is_supported_by_pasttel(u_algo_raw)
+        is_not_supported = (
+            u_verdict == "TERMINATING"
+            and not u_algo_supported
+            and p_status not in ("TERMINATING", "NONTERMINATING")
+        )
 
         # --- Classify ---
-        if p_status == "NOT_SUPPORTED":
-            # PaSTTeL does not handle this trace type
+        if p_status == "NOT_SUPPORTED" or is_not_supported:
             purple_x.append(ux)
             purple_y.append(ty)
             purple_labels.append(
-                f"{name}<br>Algo: {algo}<br>U={ux:.1f}ms"
-                f"<br>Ultimate: {u_verdict}, PaSTTeL: NOT SUPPORTED"
+                f"{name}<br>Algo: {algo}<br>U-{col_name}={ux:.1f}ms"
+                f"<br>Ultimate: {u_verdict} ({u_algo_raw}), PaSTTeL: NOT SUPPORTED"
             )
 
         elif u_verdict == "TERMINATING" and t_verdict == "TERMINATING":
-            # Both agree: terminating
             green_x.append(ux)
             green_y.append(ty)
-            green_labels.append(f"{name}<br>Algo: {algo}<br>U={ux:.1f}ms T={ty:.1f}ms")
-
-        elif u_verdict == "NONTERMINATING" and t_verdict == "NONTERMINATING":
-            # Both agree: non-terminating
-            blue_x.append(ux)
-            blue_y.append(ty)
-            blue_labels.append(f"{name}<br>Algo: {algo}<br>U={ux:.1f}ms T={ty:.1f}ms")
-
-        elif u_verdict == "TERMINATING" and t_verdict != "TERMINATING" and p_status != "TIMEOUT":
-            # Explicit contradiction: Ultimate=TERMINATING, PaSTTeL says otherwise
-            red_x.append(ux)
-            red_y.append(ty)
-            red_labels.append(
-                f"{name}<br>Algo: {algo}<br>U={ux:.1f}ms T={ty:.1f}ms"
-                f"<br>Ultimate: TERMINATING, PaSTTeL: {t_verdict}"
+            green_labels.append(
+                f"{name}<br>Algo: {algo}<br>U-{col_name}={ux:.1f}ms  T={ty:.1f}ms"
             )
 
-        elif p_status == "TIMEOUT" or t_time_str == "-":
-            # PaSTTeL timed out (no answer within the time limit)
+        elif u_verdict == "NONTERMINATING" and t_verdict == "NONTERMINATING":
+            blue_x.append(ux)
+            blue_y.append(ty)
+            blue_labels.append(
+                f"{name}<br>Algo: {algo}<br>U-{col_name}={ux:.1f}ms  T={ty:.1f}ms"
+            )
+
+        elif p_status == "TIMEOUT" or ty_raw is None:
             orange_x.append(ux)
             orange_y.append(ty)
             orange_labels.append(
-                f"{name}<br>Algo: {algo}<br>U={ux:.1f}ms"
+                f"{name}<br>Algo: {algo}<br>U-{col_name}={ux:.1f}ms"
                 f"<br>Ultimate: {u_verdict}, PaSTTeL: TIMEOUT (PAR-2={par2_ms:.0f}ms)"
             )
 
-        else:
-            # Other disagreement (e.g. Ultimate=NONTERMINATING, PaSTTeL=TERMINATING)
+        elif u_verdict == "TERMINATING" and t_verdict != "TERMINATING":
             red_x.append(ux)
             red_y.append(ty)
             red_labels.append(
-                f"{name}<br>Algo: {algo}<br>U={ux:.1f}ms T={ty:.1f}ms"
+                f"{name}<br>Algo: {algo}<br>U-{col_name}={ux:.1f}ms  T={ty:.1f}ms"
+                f"<br>Ultimate: TERMINATING ({u_algo_raw}), PaSTTeL: {t_verdict}"
+            )
+
+        else:
+            red_x.append(ux)
+            red_y.append(ty)
+            red_labels.append(
+                f"{name}<br>Algo: {algo}<br>U-{col_name}={ux:.1f}ms  T={ty:.1f}ms"
                 f"<br>Ultimate: {u_verdict}, PaSTTeL: {t_verdict}"
             )
 
@@ -1116,8 +1258,8 @@ def main():
         help="Output CSV file (default: benchmark_results.csv)"
     )
     parser.add_argument(
-        "--cpus", type=int, default=2,
-        help="Number of CPUs for pasttel (default: 2)"
+        "--cpus", type=int, default=1,
+        help="Number of CPUs for pasttel (default: 1)"
     )
     parser.add_argument(
         "--timeout", type=int, default=60,
@@ -1136,6 +1278,10 @@ def main():
     parser.add_argument(
         "--strat", choices=["terminate", "nonterminate", "both"], default="terminate",
         help="Analysis strategy passed to pasttel: 'terminate', 'nonterminate' or 'both' (default: terminate)"
+    )
+    parser.add_argument(
+        "--solver", choices=["z3", "cvc5"], default="z3",
+        help="Use specific SMT solver: 'z3' or 'cvc5' (default: z3)"
     )
     parser.add_argument(
         "--check", choices=["loop", "lasso"], default="lasso",
@@ -1188,6 +1334,11 @@ def main():
 
     results = []
 
+    def fmt_ms(val):
+        """Format a millisecond value, returning '-' if zero or negative."""
+        return f"{val:.2f}" if val > 0 else "-"
+        
+ 
     for trace_file in trace_files:
         basename = os.path.basename(trace_file)
         dirname=os.path.dirname(trace_file)
@@ -1205,8 +1356,9 @@ def main():
             results.append({
                 "Trace Name": trace_file,
                 "Result Code": "UNKNOWN",
-                "Ultimate-Fixpoint (ms)": "-",
-                "Ultimate (ms)": "-",
+                "Fixpoint (ms)":        "-",
+                "Termination (ms)":     "-",
+                "Nontermination (ms)":  "-",
                 "pasttel (ms)": "-",
                 "Stem Size": 0,
                 "Loop Size": 0,
@@ -1225,8 +1377,9 @@ def main():
             results.append({
                 "Trace Name": trace_file,
                 "Result Code": ultimate['result'],
-                "Ultimate-Fixpoint (ms)": f"{ultimate['fixpoint_time_ms']:.2f}" if ultimate['fixpoint_time_ms'] > 0 else "-",
-                "Ultimate (ms)": f"{ultimate['time_ms']:.2f}" if ultimate['time_ms'] >= 0 else "-",
+                "Fixpoint (ms)":       fmt_ms(ultimate['fixpoint_time_ms']),
+                "Termination (ms)":    fmt_ms(ultimate['termination_time_ms']),
+                "Nontermination (ms)": fmt_ms(ultimate['nontermination_time_ms']),
                 "pasttel (ms)": "-",
                 "Stem Size": ultimate['stem_size'],
                 "Loop Size": ultimate['loop_size'],
@@ -1239,8 +1392,9 @@ def main():
             results.append({
                 "Trace Name": trace_file,
                 "Result Code": ultimate['result'],
-                "Ultimate-Fixpoint (ms)": f"{ultimate['fixpoint_time_ms']:.2f}" if ultimate['fixpoint_time_ms'] > 0 else "-",
-                "Ultimate (ms)": f"{ultimate['time_ms']:.2f}" if ultimate['time_ms'] >= 0 else "-",
+                "Fixpoint (ms)":       fmt_ms(ultimate['fixpoint_time_ms']),
+                "Termination (ms)":    fmt_ms(ultimate['termination_time_ms']),
+                "Nontermination (ms)": fmt_ms(ultimate['nontermination_time_ms']),
                 "pasttel (ms)": "-",
                 "Stem Size": ultimate['stem_size'],
                 "Loop Size": ultimate['loop_size'],
@@ -1253,8 +1407,9 @@ def main():
             results.append({
                 "Trace Name": trace_file,
                 "Result Code": ultimate['result'],
-                "Ultimate-Fixpoint (ms)": f"{ultimate['fixpoint_time_ms']:.2f}" if ultimate['fixpoint_time_ms'] > 0 else "-",
-                "Ultimate (ms)": f"{ultimate['time_ms']:.2f}" if ultimate['time_ms'] >= 0 else "-",
+                "Fixpoint (ms)":       fmt_ms(ultimate['fixpoint_time_ms']),
+                "Termination (ms)":    fmt_ms(ultimate['termination_time_ms']),
+                "Nontermination (ms)": fmt_ms(ultimate['nontermination_time_ms']),
                 "pasttel (ms)": "-",
                 "Stem Size": ultimate['stem_size'],
                 "Loop Size": ultimate['loop_size'],
@@ -1278,7 +1433,7 @@ def main():
         print(f"  Running pasttel (--strat {args.strat} -c {args.cpus})...")
         pasttel = run_pasttel(
             json_path, args.pasttel_bin, cpus=args.cpus, timeout_s=args.timeout,
-            strat=args.strat
+            strat=args.strat, solver=args.solver
         )
 
         print(f"  PaSTTeL result: {pasttel['result']}")
@@ -1295,7 +1450,10 @@ def main():
         u_fixpoint_time = f"{ultimate['fixpoint_time_ms']:.2f}" if ultimate['fixpoint_time_ms'] > 0 else "-"
         t_time = f"{pasttel['time_ms']:.2f}" if pasttel["time_ms"] >= 0 else "-"
 
-        # Determine PaSTTeL status for scatter plot coloring
+        # Determine PaSTTeL status for scatter plot coloring.
+        # NOT_SUPPORTED: Ultimate TERMINATING with an algo not implemented by
+        # PaSTTeL AND PaSTTeL returned UNKNOWN (not a contradiction).
+        u_algo_supported = _ultimate_algo_is_supported_by_pasttel(ultimate["algo"])
         if pasttel.get("error") == "TIMEOUT":
             p_status = "TIMEOUT"
         elif pasttel["result"] == "NOT SUPPORTED":
@@ -1304,14 +1462,19 @@ def main():
             p_status = "TERMINATING"
         elif pasttel["result"] == "NONTERMINATING":
             p_status = "NONTERMINATING"
+        elif (ultimate["result"] == "TERMINATING"
+              and not u_algo_supported
+              and pasttel["result"] == "UNKNOWN"):
+            p_status = "NOT_SUPPORTED"
         else:
             p_status = "UNKNOWN"
 
         row = {
             "Trace Name": trace_file,
             "Result Code": result_code,
-            "Ultimate-Fixpoint (ms)": u_fixpoint_time,
-            "Ultimate (ms)": u_time,
+            "Fixpoint (ms)":       fmt_ms(ultimate['fixpoint_time_ms']),
+            "Termination (ms)":    fmt_ms(ultimate['termination_time_ms']),
+            "Nontermination (ms)": fmt_ms(ultimate['nontermination_time_ms']),
             "pasttel (ms)": t_time,
             "PaSTTeL Status": p_status,
             "Stem Size": ultimate["stem_size"],
@@ -1326,8 +1489,9 @@ def main():
         fieldnames = [
             "Trace Name",
             "Result Code",
-            "Ultimate-Fixpoint (ms)",
-            "Ultimate (ms)",
+            "Fixpoint (ms)",
+            "Termination (ms)",
+            "Nontermination (ms)",
             "pasttel (ms)",
             "PaSTTeL Status",
             "Stem Size",
@@ -1346,15 +1510,16 @@ def main():
         print(f"{'='*60}")
 
         # Print summary table
-        print(f"\n{'Trace Name':<70} {'Result Code':<15} {'U-Fixpoint (ms)':<17} {'Ultimate (ms)':<15} {'pasttel (ms)':<17} {'Stem':<6} {'Loop':<6} {'Total':<7} {'Algo'}")
-        print("-" * 160)
+        print(f"\n{'Trace Name':<70} {'Result Code':<15} {'Fixpoint (ms)':<15} {'Termination (ms)':<18} {'Nontermination (ms)':<21} {'pasttel (ms)':<14} {'Stem':<6} {'Loop':<6} {'Total':<7} {'Algo'}")
+        print("-" * 185)
         for row in results:
             print(
                 f"{row['Trace Name']:<70} "
                 f"{row['Result Code']:<15} "
-                f"{str(row['Ultimate-Fixpoint (ms)']):<17} "
-                f"{str(row['Ultimate (ms)']):<15} "
-                f"{str(row['pasttel (ms)']):<17} "
+                f"{str(row['Fixpoint (ms)']):<15} "
+                f"{str(row['Termination (ms)']):<18} "
+                f"{str(row['Nontermination (ms)']):<21} "
+                f"{str(row['pasttel (ms)']):<14} "
                 f"{str(row['Stem Size']):<6} "
                 f"{str(row['Loop Size']):<6} "
                 f"{str(row['Total Size Trace']):<7} "

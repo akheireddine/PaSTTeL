@@ -12,6 +12,7 @@
 #include "rewriting/rewrite_let.h"
 #include "rewriting/rewrite_division_modulo.h"
 #include "rewriting/rewrite_equality.h"
+#include "rewriting/rewrite_strict_inequalities.h"
 #include "rewriting/rewrite_booleans.h"
 #include "utiles.h"
 
@@ -37,7 +38,8 @@ void JsonTraceParser::removeArrayVarsFromProgramVars(
 
 bool checkDivModOp(const std::string formula) {
     if (formula.find("(div ") != std::string::npos ||
-            formula.find("(mod ") != std::string::npos){
+        formula.find("(/ ") != std::string::npos   ||
+        formula.find("(mod ") != std::string::npos){
         if (VERBOSITY == VerbosityLevel::VERBOSE)
             std::cout << "Detected div/mod operations in formulas" << std::endl;
         return true;
@@ -67,79 +69,90 @@ std::set<std::string> extractBoolVars(const std::map<std::string, std::string>& 
     return bool_vars;
 }
 
-
-void setLoopVariables(LassoProgram& lasso){
-    lasso.loop_vars.clear();
-    for (const auto& var : lasso.program_vars) {
-        bool in_loop_in  = lasso.loop.var_to_ssa_in.count(var) > 0;
-        bool in_loop_out = lasso.loop.var_to_ssa_out.count(var) > 0;
-        if (in_loop_in && in_loop_out) {
-            lasso.loop_vars.push_back(var);
-        }
-    }
-}
-
-// void removeUnusedVariables(LassoProgram& lasso){
-//     std::set<std::string> used_vars;
-//     for (const auto& poly : lasso.stem.polyhedra) {
-//         for (const auto& ineq : poly) {
-//             for (const auto& [var, _] : ineq.coefficients)
-//                 used_vars.insert(var);
-//             for (const auto& [var, _] : ineq.constant.coefficients)
-//                 used_vars.insert(var);
-//         }
-//     }
-//     for (const auto& poly : lasso.loop.polyhedra) {
-//         for (const auto& ineq : poly) {
-//             for (const auto& [var, _] : ineq.coefficients)
-//                 used_vars.insert(var);
-//             for (const auto& [var, _] : ineq.constant.coefficients)
-//                 used_vars.insert(var);
-//         }
-//     }
-
-//     // Filter var_to_ssa_in and var_to_ssa_out to keep only used variables
-//     auto filterVars = [&](std::map<std::string, std::string>& var_map, std::set<std::string>& used_vars) {
-//         std::map<std::string, std::string> filtered;
-//         for (const auto& [var_prog, ssa] : var_map) {
-//             if (used_vars.count(ssa) > 0) {
-//                 filtered[var_prog] = ssa;
-//             }
-//         }
-//         var_map = std::move(filtered);
-//     };
-
-//     filterVars(lasso.stem.var_to_ssa_in, used_vars);
-//     filterVars(lasso.stem.var_to_ssa_out, used_vars);
-//     filterVars(lasso.loop.var_to_ssa_in, used_vars);
-//     filterVars(lasso.loop.var_to_ssa_out, used_vars);
-
-//     // Update program_vars to keep only those that are still mapped
-//     // std::set<std::string> mapped_program_vars;
-//     // for (const auto& [var_prog, ssa] : lasso.stem.var_to_ssa_in)
-//     //     mapped_program_vars.insert(var_prog);
-//     // for (const auto& [var_prog, ssa] : lasso.stem.var_to_ssa_out)
-//     //     mapped_program_vars.insert(var_prog);
-//     // for (const auto& [var_prog, ssa] : lasso.loop.var_to_ssa_in)
-//     //     mapped_program_vars.insert(var_prog);
-//     // for (const auto& [var_prog, ssa] : lasso.loop.var_to_ssa_out)
-//     //     mapped_program_vars.insert(var_prog);
-
-//     // lasso.program_vars.clear();
-//     // for (const auto& var : mapped_program
-// }
-
 void connectStemToLoop(LassoProgram& lasso) {
-    if (lasso.stem.isTrue() || lasso.loop.isTrue()) {
-        if (VERBOSITY != VerbosityLevel::QUIET) {
-            std::cout << "\n=== No STEM or no LOOP to connect ===" << std::endl;
-            std::cout << "STEM isTrue: " << lasso.stem.isTrue() << ", LOOP isTrue: " << lasso.loop.isTrue() << std::endl;
-        }
-        return;
-    }
+    // if (lasso.stem.isTrue() || lasso.loop.isTrue()) {
+    //     if (VERBOSITY != VerbosityLevel::QUIET) {
+    //         std::cout << "\n=== No STEM or no LOOP to connect ===" << std::endl;
+    //         std::cout << "STEM isTrue: " << lasso.stem.isTrue() << ", LOOP isTrue: " << lasso.loop.isTrue() << std::endl;
+    //     }
+    //     return;
+    // }
 
     if (VERBOSITY == VerbosityLevel::VERBOSE) {
         std::cout << "\n=== Connecting STEM to LOOP ===" << std::endl;
+    }
+
+    // Detect and fix SSA collisions between stem_out and loop_out.
+    // Fix: rename the colliding loop_out SSA to a fresh name
+    {
+        static int collision_counter = 0;
+        // Collect the set of stem_out SSA names for O(1) lookup.
+        std::set<std::string> stem_out_ssas;
+        for (const auto& [_, ssa] : lasso.stem.var_to_ssa_out)
+            stem_out_ssas.insert(ssa);
+
+        // out_rename: old_ssa → fresh  (applied to loop polyhedra/formula)
+        // For unmutated vars (loop_in == loop_out == colliding ssa), we rename
+        // both in and out to the same fresh name so identity detection still works.
+        std::map<std::string, std::string> out_rename;
+        for (auto& [var_prog, ssa_out_loop] : lasso.loop.var_to_ssa_out) {
+            if (stem_out_ssas.count(ssa_out_loop)) {
+                auto it_in = lasso.loop.var_to_ssa_in.find(var_prog);
+                bool unmutated = (it_in != lasso.loop.var_to_ssa_in.end() &&
+                                  it_in->second == ssa_out_loop);
+                std::string fresh = "v_" + var_prog + "_loop_fresh_"
+                                    + std::to_string(collision_counter++);
+                if (VERBOSITY == VerbosityLevel::VERBOSE)
+                    std::cout << "  [connectStemToLoop] Renaming colliding loop_out "
+                              << ssa_out_loop << " → " << fresh
+                              << " for var " << var_prog
+                              << (unmutated ? " (unmutated: renaming loop_in too)" : "")
+                              << std::endl;
+                out_rename[ssa_out_loop] = fresh;
+                ssa_out_loop = fresh;
+                if (unmutated)
+                    it_in->second = fresh;
+            }
+        }
+
+        // Apply the rename to the loop raw_formula and polyhedra.
+        auto applyRename = [&](const std::string& s) -> std::string {
+            auto it = out_rename.find(s);
+            return (it != out_rename.end()) ? it->second : s;
+        };
+        if (!out_rename.empty()) {
+            for (auto& poly : lasso.loop.polyhedra) {
+                for (auto& ineq : poly) {
+                    std::map<std::string, AffineTerm> new_coeffs;
+                    for (const auto& [v, c] : ineq.coefficients)
+                        new_coeffs[applyRename(v)] = c;
+                    ineq.coefficients = new_coeffs;
+                    std::map<std::string, double> new_cc;
+                    for (const auto& [v, val] : ineq.constant.coefficients)
+                        new_cc[applyRename(v)] = val;
+                    ineq.constant.coefficients = new_cc;
+                }
+            }
+            if (!lasso.loop.raw_formula.empty()) {
+                for (const auto& [old_ssa, new_ssa] : out_rename) {
+                    size_t pos = 0;
+                    auto& f = lasso.loop.raw_formula;
+                    while ((pos = f.find(old_ssa, pos)) != std::string::npos) {
+                        bool start_ok = (pos == 0) ||
+                            f[pos-1]==' ' || f[pos-1]=='(' || f[pos-1]==')';
+                        size_t end = pos + old_ssa.size();
+                        bool end_ok = (end == f.size()) ||
+                            f[end]==' ' || f[end]=='(' || f[end]==')';
+                        if (start_ok && end_ok) {
+                            f.replace(pos, old_ssa.size(), new_ssa);
+                            pos += new_ssa.size();
+                        } else {
+                            pos += old_ssa.size();
+                        }
+                    }
+                }
+            }
+        }
     }
 
     std::map<std::string, std::string> substitution;
@@ -159,9 +172,13 @@ void connectStemToLoop(LassoProgram& lasso) {
         // Pour les identifiants quotés SMT-LIB2 |...[idx]...|, seul l'index
         // interne peut être substitué ; le nom complet reste entre pipes.
         auto substituteVar = [&](const std::string& var_ssa) -> std::string {
-            // Identifiant quoté |...| : substituer l'index interne si besoin
+            // Identifiant quoté |...| : substitution directe ou index interne
             if (var_ssa.size() >= 2 && var_ssa.front() == '|' && var_ssa.back() == '|') {
-                // Cherche [idx] à l'intérieur des pipes
+                // Substitution directe de l'identifiant complet (ex: |v_x_9| → |v_x_5|)
+                auto it_direct = substitution.find(var_ssa);
+                if (it_direct != substitution.end())
+                    return it_direct->second;
+                // Cherche [idx] à l'intérieur des pipes (cellules de tableau)
                 size_t bracket = var_ssa.find('[');
                 if (bracket != std::string::npos) {
                     size_t close = var_ssa.find(']', bracket);
@@ -214,6 +231,27 @@ void connectStemToLoop(LassoProgram& lasso) {
         // Update var_to_ssa_out of loop (uses substituteVar to handle quoted identifiers)
         for (auto& [var_prog, ssa_out] : lasso.loop.var_to_ssa_out) {
             ssa_out = substituteVar(ssa_out);
+        }
+
+        // Apply same substitution to raw_formula (word-boundary replacement).
+        if (!lasso.loop.raw_formula.empty()) {
+            for (const auto& [old_ssa, new_ssa] : substitution) {
+                size_t pos = 0;
+                auto& f = lasso.loop.raw_formula;
+                while ((pos = f.find(old_ssa, pos)) != std::string::npos) {
+                    bool start_ok = (pos == 0) ||
+                        f[pos-1]==' ' || f[pos-1]=='(' || f[pos-1]==')';
+                    size_t end = pos + old_ssa.size();
+                    bool end_ok = (end == f.size()) ||
+                        f[end]==' ' || f[end]=='(' || f[end]==')';
+                    if (start_ok && end_ok) {
+                        f.replace(pos, old_ssa.size(), new_ssa);
+                        pos += new_ssa.size();
+                    } else {
+                        pos += old_ssa.size();
+                    }
+                }
+            }
         }
     }
 }
@@ -350,15 +388,16 @@ void initializeOptionsForAnalysis(LassoProgram& lasso) {
 }
 
 // ============================================================================
-// MAIN PARSING FUNCTION
+// MAIN PARSING RAW JSON INTO (LINEAR) LASSO PROGRAM
 // ============================================================================
 
-LassoProgram JsonTraceParser::parseToLasso(const std::string& filename) {
+LassoProgram JsonTraceParser::parseToLasso(const std::string& filename, bool linearize) {
     LassoProgram lasso;
 
     if (VERBOSITY == VerbosityLevel::VERBOSE) {
         std::cout << "\n==================================================================" << std::endl;
-        std::cout << "=== Parsing JSON trace file: " << filename << " ===" << std::endl;
+        std::cout << "=== Parsing JSON trace file: " << filename  << (linearize ? "and LINEARIZING" : "") << "===" << std::endl; 
+        
         std::cout << "==================================================================\n" << std::endl;
     }
 
@@ -480,7 +519,8 @@ LassoProgram JsonTraceParser::parseToLasso(const std::string& filename) {
 
     // 7. Filter Array vars from program_vars (no linear coefficient possible).
     // Bool vars are KEPT — their 0/1 bounds are injected by rewrite.
-    JsonTraceParser::removeArrayVarsFromProgramVars(lasso.program_vars, lasso.var_sorts);
+    if(linearize)
+        JsonTraceParser::removeArrayVarsFromProgramVars(lasso.program_vars, lasso.var_sorts);
 
     // 8. Extract uninterpreted functions (if present)
     if (j.contains("functions") && j["functions"].is_array()) {
@@ -539,6 +579,7 @@ LassoProgram JsonTraceParser::parseToLasso(const std::string& filename) {
             if (trans.contains("formula") && trans["formula"].is_string()) {
                 std::string formula = trans["formula"].get<std::string>();
                 if (formula.find("(div ") != std::string::npos ||
+                    formula.find("(/ ") != std::string::npos   ||
                     formula.find("(mod ") != std::string::npos) {
                     return true;
                 }
@@ -556,23 +597,22 @@ LassoProgram JsonTraceParser::parseToLasso(const std::string& filename) {
     FormulaRewriter * rewriter = new FormulaRewriter();
     rewriter->addHandler(new RewriteLet());
 
-    if (has_divmod) {
-        rewriter->addHandler(new RewriteDivisionMod());
-    }
-    if (!bool_vars.empty()) {
-        rewriter->addHandler(new RewriteBooleans(bool_vars));
-    }
-    // always at the end: rewrite equalities after all other transformations
-    rewriter->addHandler(new RewriteEquality());
-
-
     // 12. Create FormulaLinearizer with appropriate handlers
     // The linearizer replaces non-linear terms with fresh variables
     // so that the formulas become linear for Motzkin transformation.
-    std::unique_ptr<FormulaLinearizer> linearizer;
-    bool needs_linearizer = !lasso.functions.empty() || has_arrays;
+    std::unique_ptr<FormulaLinearizer> linearizer = NULL;
+    bool needs_linearizer = !lasso.functions.empty() || has_arrays || has_divmod || !bool_vars.empty();
 
-    if (needs_linearizer) {
+    if (needs_linearizer && linearize) {
+
+        if (has_divmod) {
+            rewriter->addHandler(new RewriteDivisionMod());
+        }
+        if (!bool_vars.empty()) {
+            rewriter->addHandler(new RewriteBooleans(bool_vars));
+        }
+        // always at the end: rewrite equalities after all other transformations
+
         linearizer = std::make_unique<FormulaLinearizer>();
 
         // Add UFHandler for uninterpreted functions
@@ -617,11 +657,17 @@ LassoProgram JsonTraceParser::parseToLasso(const std::string& filename) {
 
     }
 
+    initializeOptionsForAnalysis(lasso);
+
+    rewriter->addHandler(new RewriteEquality(lasso.integer_mode));
+    if (lasso.integer_mode)
+        rewriter->addHandler(new RewriteStrictInequalities());
+
     // 4. Parse STEM transitions
     std::vector<UltimateTransitionLine> stem_lines;
     if (j.contains("stem") && j["stem"].is_array()) {
         for (const auto& trans_json : j["stem"]) {
-            stem_lines.push_back(parseTransition(trans_json, linearizer.get(), rewriter));
+            stem_lines.push_back(parseTransition(trans_json, linearizer.get(), rewriter, linearize));
         }
     }
 
@@ -637,7 +683,7 @@ LassoProgram JsonTraceParser::parseToLasso(const std::string& filename) {
     std::vector<UltimateTransitionLine> loop_lines;
     if (j.contains("loop") && j["loop"].is_array()) {
         for (const auto& trans_json : j["loop"]) {
-            loop_lines.push_back(parseTransition(trans_json, linearizer.get(), rewriter));
+            loop_lines.push_back(parseTransition(trans_json, linearizer.get(), rewriter, linearize));
         }
     }
 
@@ -667,12 +713,7 @@ LassoProgram JsonTraceParser::parseToLasso(const std::string& filename) {
     // 7. Connect STEM->LOOP
     connectStemToLoop(lasso);
 
-    // 7b0. Calculer loop_vars AVANT ensureMapping :
-    //      intersection loop.var_to_ssa_in ∩ loop.var_to_ssa_out depuis le JSON original.
-    //      template variables = loop.getOutVars() ∩ loop.getInVars().
-    //      Après ensureMapping, tous les program_vars sont dans les deux maps (via fresh vars),
-    //      donc l'intersection ne peut pas être faite après.
-    setLoopVariables(lasso);
+    // 7b0. Remove unused variables from program_vars list
 
     // 7b. Ensure all program_vars have SSA mappings in both stem and loop
     //     If a program variable is missing from in_vars or out_vars of the loop
@@ -710,7 +751,7 @@ LassoProgram JsonTraceParser::parseToLasso(const std::string& filename) {
         rewriter->storeAuxVarsToLasso(lasso);
 
     // 8b. Store linearizer function abstractions with composition substitutions applied
-    if(linearizer)
+    if(linearizer && linearize)
         linearizer->storeAbstractionsToLasso(lasso);
 
     storeAbstractFunctionsToLasso(lasso, stem_lines, loop_lines);
@@ -720,17 +761,13 @@ LassoProgram JsonTraceParser::parseToLasso(const std::string& filename) {
     // They must be declared in the solver but carry no ranking-function coefficient.
     addFreeAuxVariables(lasso, stem_lines, loop_lines);
 
-    initializeOptionsForAnalysis(lasso);
-
     if (VERBOSITY == VerbosityLevel::VERBOSE) {
         std::cout << "\n=== LassoProgram constructed successfully ===" << std::endl;
-        std::cout << "Loop vars (in ∩ out): ";
-        for (const auto& v : lasso.loop_vars) std::cout << v << " ";
-        std::cout << std::endl;
     }
 
     return lasso;
 }
+
 
 
 // ============================================================================
@@ -763,17 +800,12 @@ void JsonTraceParser::convertLassoStringToLassoProgram(
 
     connectStemToLoop(lasso);
 
-    setLoopVariables(lasso);
-
     if (VERBOSITY == VerbosityLevel::VERBOSE) {
         std::cout << "\n=== After connecting STEM to LOOP ===" << std::endl;
         std::cout << "STEM input vars: " << lasso.stem.var_to_ssa_in.size() << std::endl;
         std::cout << "STEM output vars: " << lasso.stem.var_to_ssa_out.size() << std::endl;
         std::cout << "LOOP input vars: " << lasso.loop.var_to_ssa_in.size() << std::endl;
         std::cout << "LOOP output vars: " << lasso.loop.var_to_ssa_out.size() << std::endl;
-        std::cout << "Loop vars (in ∩ out) (size " << lasso.loop_vars.size() << "): ";
-        for (const auto& v : lasso.loop_vars) std::cout << v << " ";
-        std::cout << std::endl;
     }
 
     {
@@ -900,8 +932,6 @@ UltimateTransitionLine JsonTraceParser::convertSMTFormula2ToLinearInequalities(
                 }
             }
 
-            std::cout<<"---- Formula before DNF :"<< formula_to_parse << std::endl;
-
             trans.dnf = SMTParser::parseFormulaToDNF(formula_to_parse);
         } catch (const std::exception& e) {
             std::cerr << "Warning: Failed to parse formula: " << trans.formula << std::endl;
@@ -924,7 +954,8 @@ UltimateTransitionLine JsonTraceParser::convertSMTFormula2ToLinearInequalities(
 UltimateTransitionLine JsonTraceParser::parseTransition(
     const nlohmann::json& trans_json,
     FormulaLinearizer* linearizer,
-    FormulaRewriter* rewriter) {
+    FormulaRewriter* rewriter,
+    bool linearize) {
     UltimateTransitionLine trans;
 
     // Extract source label
@@ -940,6 +971,9 @@ UltimateTransitionLine JsonTraceParser::parseTransition(
         }
         if (trans.formula.empty()) {
             throw std::runtime_error("Formula is empty. It's not a valid lasso program");
+        }
+        if (trans.formula == "true") {
+            trans.formula = "(>= 1 0)";
         }
     }
 
@@ -963,7 +997,6 @@ UltimateTransitionLine JsonTraceParser::parseTransition(
     }
 
     // Parse formula to DNF
-    // Pipeline: RewriteBooleans -> RewriteDivisionMod -> RewriteEquality -> Linearizer -> DNF
     if (!trans.formula.empty() && trans.formula != "true") {
         try {
             std::string formula_to_parse = trans.formula;
@@ -977,45 +1010,16 @@ UltimateTransitionLine JsonTraceParser::parseTransition(
             if (VERBOSITY == VerbosityLevel::VERBOSE) {
                 std::cout << "After rewriting: " << formula_to_parse << std::endl;
             }
-            // // Step 0: RewriteLet (inline let bindings before any other rewriting)
-            // RewriteLet let_rewriter = RewriteLet();
-            // formula_to_parse = let_rewriter.rewrite(formula_to_parse);
 
-            // // Step 1: RewriteBooleans (bare bool var -> integer comparison)
-            // if (!bool_program_vars.empty()) {
-            //     // Build SSA var set from in_vars/out_vars for boolean program vars
-            //     std::set<std::string> bool_ssa_vars;
-            //     for (const auto& [prog_var, ssa_var] : trans.in_vars) {
-            //         if (bool_program_vars.count(prog_var)) {
-            //             bool_ssa_vars.insert(ssa_var);
-            //         }
-            //     }
-            //     for (const auto& [prog_var, ssa_var] : trans.out_vars) {
-            //         if (bool_program_vars.count(prog_var)) {
-            //             bool_ssa_vars.insert(ssa_var);
-            //         }
-            //     }
-
-            //     if (!bool_ssa_vars.empty()) {
-            //         RewriteBooleans bool_rewriter(bool_ssa_vars);
-            //         formula_to_parse = bool_rewriter.rewrite(formula_to_parse);
-
-            //         if (VERBOSITY == VerbosityLevel::VERBOSE) {
-            //             std::cout << "  [RewriteBooleans] Rewrote " << bool_ssa_vars.size()
-            //                       << " boolean SSA var(s)" << std::endl;
-            //         }
-            //     }
-            // }
-
-            // Step 2: FormulaLinearizer (abstract UF, arrays, non-linear mul)
             if (linearizer) {
                 LinearizationResult lin_result = linearizer->linearize(formula_to_parse);
                 if (lin_result.was_modified) {
                     formula_to_parse = lin_result.linearized_formula;
                 }
             }
+            if (linearize)
+                trans.dnf = SMTParser::parseFormulaToDNF(formula_to_parse);
 
-            trans.dnf = SMTParser::parseFormulaToDNF(formula_to_parse);
         } catch (const std::exception& e) {
             std::cerr << "Warning: Failed to parse formula: " << trans.formula << std::endl;
             std::cerr << "Error: " << e.what() << std::endl;

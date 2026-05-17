@@ -35,8 +35,7 @@ NestedTemplate::NestedTemplate(int num_components, int delta_value)
 
 void NestedTemplate::init(const LassoProgram& lasso) {
     lasso_ = lasso;
-    const auto& vars = lasso_.loop_vars.empty() ? lasso_.program_vars : lasso_.loop_vars;
-    int n = static_cast<int>(vars.size());
+    int n = static_cast<int>(lasso_.program_vars.size());
 
     generators_.clear();
     for (int i = 0; i < num_components_; ++i) {
@@ -55,7 +54,7 @@ void NestedTemplate::init(const LassoProgram& lasso) {
 // DECLARATION DES PARAMETRES SMT
 // ============================================================================
 
-void NestedTemplate::declareParameters(std::shared_ptr<SMTSolver> solver) const {
+void NestedTemplate::declareParameters(SMTSolverInterface* solver) const {
     if (!initialized_) {
         throw std::runtime_error("NestedTemplate::declareParameters() called before init()");
     }
@@ -148,23 +147,23 @@ LinearInequality NestedTemplate::getConstraintsBounded(
 // ============================================================================
 
 std::vector<RankingFunction> NestedTemplate::extractRankingFunctions(
-    std::shared_ptr<SMTSolver> solver,
+    SMTSolverInterface* solver,
     const std::vector<std::string>& program_vars) const
 {
     std::vector<RankingFunction> components;
     size_t n = program_vars.size();
-    double delta = solver->getValue(delta_param_);
+    Rational delta = solver->getRationalValue2(delta_param_);
 
     for (int i = 0; i < num_components_; ++i) {
         RankingFunction rf;
-        auto values = generators_[i]->extractValues(solver);
-        for (size_t j = 0; j < n && j < values.size(); ++j) {
-            rf.coefficients[program_vars[j]] = static_cast<int64_t>(std::round(values[j]));
-        }
-        if (values.size() > n) {
-            rf.constant = static_cast<int64_t>(std::round(values[n]));
-        }
-        rf.delta = static_cast<int64_t>(std::round(delta));
+        auto values = generators_[i]->extractRationals(solver);
+        for (size_t j = 0; j < n && j < values.size(); ++j)
+            rf.coefficients[program_vars[j]] = values[j];
+
+        if (values.size() > n)
+            rf.constant = values[n];
+
+        rf.delta = delta;
         components.push_back(rf);
     }
     return components;

@@ -8,21 +8,27 @@
 #include "templates/lexicographic_template.h"
 #include "utiles.h"
 
+#define USE_VALIDATOR true
+
+extern VerbosityLevel VERBOSITY;
+
 // ============================================================================
 // CONSTRUCTEUR
 // ============================================================================
 
 RankingBasedTechnique::RankingBasedTechnique(
+    SMTSolverInterface* solver,
     const std::string& template_name,
     const std::vector<TemplateConfig>& configs,
-    int num_components_nested)
-    : template_name_(template_name)
-    , configs_(configs)
-    , num_components_nested_(num_components_nested)
-    , lasso_(nullptr)
-    , cancelled_(false)
-    , last_synthesizer_(nullptr) {
-    solver_ = nullptr; // Initialisé dans analyze()
+    int num_components)
+        : template_name_(template_name)
+        , configs_(configs)
+        , num_components_(num_components)
+        , lasso_(nullptr)
+        , cancelled_(false)
+        , last_synthesizer_(nullptr)
+{
+    solver_ = solver;
 }
 
 // ============================================================================
@@ -32,6 +38,7 @@ RankingBasedTechnique::RankingBasedTechnique(
 void RankingBasedTechnique::init(const LassoProgram& lasso) {
     lasso_ = &lasso;
     cancelled_.store(false);
+    lasso.declareSolverContext(solver_, true);
 }
 
 // ============================================================================
@@ -68,9 +75,9 @@ RankingTemplate* RankingBasedTechnique::createTemplate(
     if (template_name == "AffineTemplate") {
         return new AffineTemplate();
     } else if (template_name == "NestedTemplate") {
-        return new NestedTemplate(num_components_nested_);
+        return new NestedTemplate(num_components_);
     } else if (template_name == "LexicographicTemplate") {
-        return new LexicographicTemplate(num_components_nested_);
+        return new LexicographicTemplate(num_components_);
     } else {
         throw std::invalid_argument("Unknown template name: " + template_name);
     }
@@ -80,7 +87,7 @@ RankingTemplate* RankingBasedTechnique::createTemplate(
 // ANALYSE PRINCIPALE
 // ============================================================================
 
-AnalysisResult RankingBasedTechnique::analyze(std::shared_ptr<SMTSolver> solver) {
+AnalysisResult RankingBasedTechnique::analyze() {
     ProofCertificate proof;
     proof.technique_name = getName();
 
@@ -90,9 +97,6 @@ AnalysisResult RankingBasedTechnique::analyze(std::shared_ptr<SMTSolver> solver)
         return proof_.status;
     }
 
-    solver_ = solver;
-
-    extern VerbosityLevel VERBOSITY;
     bool verbosity = (VERBOSITY == VerbosityLevel::VERBOSE);
 
     for (const auto& config : configs_) {
@@ -101,26 +105,20 @@ AnalysisResult RankingBasedTechnique::analyze(std::shared_ptr<SMTSolver> solver)
                 std::cout << "\n[RankingBased] Technique cancelled" << std::endl;
             break;
         }
-        solver->reset();
-        bool found = tryTemplateConfiguration(template_name_, config, solver, verbosity);
+        solver_->reset();
+        bool found = tryTemplateConfiguration(template_name_, config, verbosity);
 
         if (found) {
             proof.status = AnalysisResult::TERMINATING;
             proof.description = "Termination proof found with " + template_name_ + config.description;
 
             assert(last_synthesizer_ && "tryTemplateConfiguration returned true but last_synthesizer_ is null");
-            const auto& rf = last_synthesizer_->getTerminationArgument().ranking_function;
-            proof.rf_witness = rf.coefficients;
-            if (!proof.rf_witness.empty()) {
-                std::ostringstream proof_str;
-                size_t count = 0;
-                for (const auto& [var, coef] : proof.rf_witness) {
-                    if (coef == 0) continue;
-                    proof_str << coef << var << (count < rf.coefficients.size() - 1 ? " + " : "");
-                    count++;
-                }
-                proof.proof_details = proof_str.str();
+            const auto& rankfunctions_comp = last_synthesizer_->getTerminationArgument().ranking_functions;
+            proof.proof_details = "";
+            for(const auto& rf : rankfunctions_comp){
+                proof.proof_details += rf.toString() +"\n";
             }
+            proof.rf_witness = rankfunctions_comp[0].coefficients;
             proof_ = proof;
             return proof_.status;
         }
@@ -137,7 +135,6 @@ AnalysisResult RankingBasedTechnique::analyze(std::shared_ptr<SMTSolver> solver)
 bool RankingBasedTechnique::tryTemplateConfiguration(
     const std::string& template_name,
     const TemplateConfig& config,
-    std::shared_ptr<SMTSolver> solver,
     int verbosity) {
 
     if (verbosity) {
@@ -152,7 +149,7 @@ bool RankingBasedTechnique::tryTemplateConfiguration(
 
     // Créer le synthesizer — les SI sont gérés par SIG à l'intérieur
     auto synthesizer = std::make_unique<GenericTerminationSynthesizer>(
-        *lasso_, ranking_template, solver,
+        *lasso_, ranking_template, std::move(solver_),
         config.num_si_strict, config.num_si_nonstrict);
 
     // Lancer la synthèse
@@ -161,50 +158,53 @@ bool RankingBasedTechnique::tryTemplateConfiguration(
     if (!synthesis_result.is_valid) {
         if (verbosity) {
             std::cout << "\nNo ranking function found with template "
-                      << template_name << config.description << std::endl;
+                    << template_name << config.description << std::endl;
         }
         return false;  // Échec
     }
 
     if (verbosity) {
         std::cout << "\nFound a ranking function with template "
-                  << template_name << config.description << std::endl;
+                << template_name << config.description << std::endl;
         
         synthesizer->printResults(synthesis_result);
     }
     // VALIDATION POST-SYNTHÈSE
-    RankingAndInvariantValidator validator;
-    if (template_name == "AffineTemplate") {
-        auto validation_result = validator.validate(
-            synthesizer->getTerminationArgument(),
-            *lasso_,
-            solver
-        );
 
-        if (!validation_result.is_valid) {
+    if (USE_VALIDATOR){
+        RankingAndInvariantValidator validator;
+        if (template_name == "AffineTemplate") {
+            auto validation_result = validator.validate(
+                synthesizer->getTerminationArgument(),
+                *lasso_,
+                solver_
+            );
+
+            if (!validation_result.is_valid) {
+                if (verbosity)
+                    std::cout << "\nValidation failed!" << std::endl;
+                return false;
+            }
+
             if (verbosity)
-                std::cout << "\nValidation failed!" << std::endl;
-            return false;
-        }
+                validator.printValidationResult(validation_result);
 
-        if (verbosity)
-            validator.printValidationResult(validation_result);
+        } else if (template_name == "NestedTemplate") {
+            auto validation_result = validator.validateNested(
+                synthesizer->getTerminationArgument(),
+                *lasso_,
+                solver_
+            );
 
-    } else if (template_name == "NestedTemplate") {
-        auto validation_result = validator.validateNested(
-            synthesizer->getTerminationArgument(),
-            *lasso_,
-            solver
-        );
+            if (!validation_result.is_valid) {
+                if (verbosity)
+                    std::cout << "\nNested validation failed: " << validation_result.error_message << std::endl;
+                return false;
+            }
 
-        if (!validation_result.is_valid) {
             if (verbosity)
-                std::cout << "\nNested validation failed: " << validation_result.error_message << std::endl;
-            return false;
+                validator.printNestedValidationResult(validation_result);
         }
-
-        if (verbosity)
-            validator.printNestedValidationResult(validation_result);
     }
 
     // Succès ! Sauvegarder le résultat
@@ -230,6 +230,8 @@ void RankingBasedTechnique::cancel() {
 // ============================================================================
 
 std::string RankingBasedTechnique::getName() const {
+    if(num_components_ > 0)
+        return "RankingBased(" + std::to_string(num_components_) + "-" + template_name_ + ")";
     return "RankingBased(" + template_name_ + ")";
 }
 
@@ -239,9 +241,9 @@ std::string RankingBasedTechnique::getDescription() const {
 
 void RankingBasedTechnique::printInfo() const {
     std::cout << "Technique: " << getName() << "\n"
-              << "Description: " << getDescription() << "\n"
-              << "Template: " << template_name_ << "\n"
-              << "Configurations: " << configs_.size() << std::endl;
+            << "Description: " << getDescription() << "\n"
+            << "Template: " << template_name_ << "\n"
+            << "Configurations: " << configs_.size() << std::endl;
 }
 
 // ============================================================================

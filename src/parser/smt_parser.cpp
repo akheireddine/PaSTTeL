@@ -4,7 +4,9 @@
 
 #include "parser/smt_parser.h"
 #include "nla_handling.h"
+#include "utiles.h"
 
+extern VerbosityLevel VERBOSITY;
 
 DNFFormula SMTParser::parseFormulaToDNF(const std::string& smtFormula) {
     DNFFormula result;
@@ -104,6 +106,9 @@ std::vector<LinearInequality> SMTParser::parseAtomicFormula(const std::string& f
     try {
         result.push_back(parseInequality(formula));
     } catch (const NlaTermException& e) {
+        if( VERBOSITY == VerbosityLevel::VERBOSE){
+            std::cout<< "[SMTParser] Message: " << e.what() << std::endl;
+        }
         switch (NLA_HANDLING) {
             case NlaHandling::OVERAPPROXIMATE:
                 result.push_back(LinearInequality());              // 0 >= 0 (tautologie)
@@ -144,31 +149,74 @@ DNFFormula SMTParser::negateConjunction(const std::vector<LinearInequality>& con
     return result;
 }
 
+// Returns true if the polyhedron is trivially unsatisfiable.
+// Detects two cases:
+//   1. Constant-only contradiction: k >= 0 with k < 0
+//   2. Single-variable bound contradiction: v >= lb and v <= ub with lb > ub
+//      (only reliable after RewriteStrictInequalities converts strict to non-strict)
+static bool isTriviallyUnsat(const std::vector<LinearInequality>& poly) {
+    for (const auto& ineq : poly) {
+        if (ineq.coefficients.empty() && ineq.constant.constant < 0.0)
+            return true;
+    }
+
+    std::map<std::string, double> lower_bounds;
+    std::map<std::string, double> upper_bounds;
+
+    for (const auto& ineq : poly) {
+        if (ineq.coefficients.size() != 1) continue;
+        const auto& [var, coef_term] = *ineq.coefficients.begin();
+        if (!coef_term.coefficients.empty()) continue;  // parametric coefficient
+        double c = coef_term.constant;
+        double k = ineq.constant.constant;
+        if (std::abs(c) < 1e-12) continue;
+
+        // c*v + k >= 0  =>  v >= -k/c (if c>0)  or  v <= -k/c (if c<0)
+        double bound = -k / c;
+        if (c > 0) {
+            auto it = lower_bounds.find(var);
+            lower_bounds[var] = (it == lower_bounds.end()) ? bound : std::max(it->second, bound);
+        } else {
+            auto it = upper_bounds.find(var);
+            upper_bounds[var] = (it == upper_bounds.end()) ? bound : std::min(it->second, bound);
+        }
+    }
+
+    for (const auto& [var, lb] : lower_bounds) {
+        auto it = upper_bounds.find(var);
+        if (it != upper_bounds.end() && lb > it->second + 1e-9)
+            return true;
+    }
+
+    return false;
+}
+
 DNFFormula SMTParser::distributeAND(const std::vector<DNFFormula>& operands) {
     if (operands.empty()) {
         DNFFormula result;
         result.polyhedra.push_back({});
         return result;
     }
-    
+
     if (operands.size() == 1) return operands[0];
-    
+
     DNFFormula result = operands[0];
-    
+
     for (size_t i = 1; i < operands.size(); ++i) {
         DNFFormula new_result;
-        
+
         for (const auto& poly1 : result.polyhedra) {
             for (const auto& poly2 : operands[i].polyhedra) {
                 std::vector<LinearInequality> combined = poly1;
                 combined.insert(combined.end(), poly2.begin(), poly2.end());
-                new_result.polyhedra.push_back(combined);
+                if (!isTriviallyUnsat(combined))
+                    new_result.polyhedra.push_back(combined);
             }
         }
-        
+
         result = new_result;
     }
-    
+
     return result;
 }
 
@@ -250,18 +298,17 @@ AffineTerm SMTParser::parseArithExpr(const std::string& expr) {
     if (cleaned.find("(*") == 0) {
         auto parts = splitSExpr(cleaned);
         if (parts.size() == 3 && parts[0] == "*") {
-            // (* a b) — one operand must be a constant, the other an expression
-            // Handles both (* constant expr) and (* expr constant)
-            if (SExprUtils::isNumericLiteral(parts[1])) {
-                double coef = std::stod(parts[1]);
-                AffineTerm inner = parseArithExpr(parts[2]);
-                inner *= coef;
-                return inner;
-            } else if (SExprUtils::isNumericLiteral(parts[2])) {
-                double coef = std::stod(parts[2]);
-                AffineTerm inner = parseArithExpr(parts[1]);
-                inner *= coef;
-                return inner;
+            // (* a b) — one operand must be a constant (possibly expressed as an SMT
+            // sub-expression like (- 1)), the other a linear expression.
+            // Evaluate both sides; if one is variable-free, it is the scalar.
+            AffineTerm t1 = parseArithExpr(parts[1]);
+            AffineTerm t2 = parseArithExpr(parts[2]);
+            if (t1.coefficients.empty()) {
+                t2 *= t1.constant;
+                return t2;
+            } else if (t2.coefficients.empty()) {
+                t1 *= t2.constant;
+                return t1;
             } else {
                 throw NlaTermException(
                     "SMTParser::parseArithExpr: non-linear multiplication: " + cleaned);

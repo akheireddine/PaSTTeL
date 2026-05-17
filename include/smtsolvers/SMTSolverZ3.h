@@ -11,9 +11,9 @@
 #include "smtsolvers/SMTSolverInterface.h"
 
 /**
- * @brief Implémentation concrète de SMTSolver utilisant Z3 C++ API
+ * @brief Implémentation concrète de SMTSolverInterface utilisant Z3 C++ API
  * 
- * Cette classe hérite de SMTSolver et fournit une implémentation complète
+ * Cette classe hérite de SMTSolverInterface et fournit une implémentation complète
  * utilisant directement la bibliothèque Z3 en C++. Elle supporte :
  * - push/pop pour la gestion de contextes
  * - Déclaration de variables (Int, Real, Bool)
@@ -21,7 +21,7 @@
  * - Vérification SAT/UNSAT
  * - Extraction de modèles
  */
-class SMTSolverZ3 : public SMTSolver {
+class SMTSolverZ3 : public SMTSolverInterface {
 private:
     z3::context m_context;           // Contexte Z3
     z3::solver m_solver;             // Solveur Z3
@@ -60,7 +60,7 @@ public:
     virtual ~SMTSolverZ3() = default;
     
     // ========================================================================
-    // MÉTHODES VIRTUELLES HÉRITÉES DE SMTSolver
+    // MÉTHODES VIRTUELLES HÉRITÉES DE SMTSolverInterface
     // ========================================================================
     
     /**
@@ -116,8 +116,11 @@ public:
      * @brief Retourne la valeur exacte comme rationnel (numérateur, dénominateur)
      * Utilise directement l'API Z3 pour éviter la perte de précision.
      */
-    std::pair<int64_t, int64_t> getRationalValue(const std::string& var_name) override;
-    
+    Rational getRationalValue2(const std::string& var_name) override;
+
+    static std::shared_ptr<Term> z3ExprToTerm(const z3::expr &value);
+
+
     /**
      * @brief Compte le nombre d'assertions
      * @return Nombre d'assertions ajoutées
@@ -138,7 +141,7 @@ public:
      * @brief Crée une copie indépendante du solver
      * @return Un nouveau SMTSolverZ3 avec les mêmes paramètres
      */
-    std::shared_ptr<SMTSolver> clone() const override;
+    std::shared_ptr<SMTSolverInterface> clone() const override;
 
     // ========================================================================
     // MÉTHODES SPÉCIFIQUES À Z3

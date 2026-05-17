@@ -32,9 +32,6 @@ public:
     LinearTransition loop;
     std::vector<std::string> program_vars;
 
-    // Variables effectives du loop
-    std::vector<std::string> loop_vars;
-
     // Constantes symboliques (ERC20, null, true, false, etc.)
     std::vector<DeclaredConstant> constants;
 
@@ -51,6 +48,7 @@ public:
     std::map<std::string, std::string> var_sorts;
 
     bool integer_mode = false;
+    bool is_linearized = false;
 
     LassoProgram();
 
@@ -58,13 +56,17 @@ public:
     bool hasNoLoop() const;
     std::string toString() const;
 
+    // Applies rewriting + linearization to raw_formula → populates polyhedra.
+    // No-op if already linearized.
+    void linearize();
+
     /**
      * Déclare tout le contexte du LassoProgram dans un solveur SMT :
      * constantes, fonctions non interprétées, axiomes,
      * variables SSA (stem + loop), et abstractions de fonctions.
      *
      */
-    void declareSolverContext(std::shared_ptr<SMTSolver> solver) const;
+    void declareSolverContext(SMTSolverInterface* solver, bool linearized=false) const;
 };
 
 #endif // __LASSO_PROGRAM_H

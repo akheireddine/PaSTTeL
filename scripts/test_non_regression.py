@@ -20,15 +20,15 @@ PASTTEL_BIN = os.environ.get("PASTTEL_BIN", "./bin/pasttel")
 # ---------------------------------------------------------------------------
 
 CASES = [
-    ("examples/test_simple_counter.json",                               "TERMINATING",     "terminate"),
-    ("examples/test_variable_decrease.json",                            "TERMINATING",     "terminate"),
-    ("examples/test_ranking_func_with_two_variables.json",              "TERMINATING",     "terminate"),
-    ("examples/multiplication_termination.json",                        "TERMINATING",     "terminate"),
-    ("examples/test_unbounded_counter.json",                            "NON-TERMINATING", "nonterminate"),
-  # ("examples/test_geometric_doubling.json",                           "NON-TERMINATING", "nonterminate"),
-    ("examples/nonterminate_booleans.json",                             "NON-TERMINATING", "nonterminate"),
-    ("examples/fixpoint_nontermination.json",                           "NON-TERMINATING", "nonterminate"),
-    ("examples/test_ranking_func_with_two_variables_non_terminating.json", "NON-TERMINATING", "nonterminate"),
+    ("examples/test_simple_counter.json",                               "TERMINATING",     "both"),
+    ("examples/test_simple_counter_real.json",                          "TERMINATING",     "both"),
+    ("examples/test_variable_decrease.json",                            "TERMINATING",     "both"),
+    ("examples/test_ranking_func_with_two_variables.json",              "TERMINATING",     "both"),
+    ("examples/multiplication_termination.json",                        "TERMINATING",     "both"),
+    ("examples/test_unbounded_counter.json",                            "NON-TERMINATING", "both"),
+  # ("examples/test_geometric_doubling.json",                           "NON-TERMINATING", "both"),
+    ("examples/nonterminate_booleans.json",                             "NON-TERMINATING", "both"),
+    ("examples/test_ranking_func_with_two_variables_non_terminating.json", "NON-TERMINATING", "both"),
     ("examples/test_with_div_mod.json",                                 "TERMINATING",     "both",        2),
     ("examples/test_with_div_mod_mult.json",                            "TERMINATING",     "both",        2),
     ("examples/test_division_termination.json",                         "TERMINATING",     "both",        2),
@@ -36,15 +36,24 @@ CASES = [
     ("examples/multiplication_termination.json",                        "TERMINATING",     "both",        2),
     ("examples/nonterminate_booleans.json",                             "NON-TERMINATING", "both",        2),
     ("examples/fixpoint_nontermination.json",                           "NON-TERMINATING", "both",        2),
-    ("examples/test_hash_function_axioms.json",                         "TERMINATING",     "terminate"),
-    ("examples/test_array_sum_axioms.json",                             "TERMINATING",     "terminate"),
-    ("examples/test_token_transfer_axioms.json",                        "TERMINATING",     "terminate"),
-    ("examples/test_mapping_axioms.json",                               "TERMINATING",     "terminate"),
-    ("examples/test_infinite_loop_with_axioms.json",                    "NON-TERMINATING", "nonterminate"),
-    ("examples/test_erc20_simple.json",                                 "TERMINATING",     "terminate"),
-    ("examples/test_array_select_simple.json",                          "TERMINATING",     "terminate"),
-    ("examples/test_lexicographic_simple.json",                         "TERMINATING",     "terminate"),
-    ("examples/test_stem_si_phi1.json",                                 "TERMINATING",     "terminate"),
+    ("examples/test_hash_function_axioms.json",                         "TERMINATING",     "both"),
+    ("examples/test_array_sum_axioms.json",                             "TERMINATING",     "both"),
+    ("examples/test_token_transfer_axioms.json",                        "TERMINATING",     "both"),
+    ("examples/test_mapping_axioms.json",                               "TERMINATING",     "both"),
+    ("examples/test_infinite_loop_with_axioms.json",                    "NON-TERMINATING", "both"),
+    ("examples/test_erc20_simple.json",                                 "TERMINATING",     "both"),
+    ("examples/test_array_select_simple.json",                          "TERMINATING",     "both"),
+    ("examples/test_lexicographic_simple.json",                         "TERMINATING",     "both"),
+    ("examples/test_stem_si_phi1.json",                                 "TERMINATING",     "both"),
+    ("examples/test_fun2Bt2_affine.json",                               "TERMINATING",     "both"),
+    ("examples/test_polyrank4t2_nested3.json",                          "TERMINATING",     "both"),
+    ("examples/ref_rational_and_simplification.json",                   "TERMINATING",     "both"),
+    ("examples/test_nonterminate_gnta_real.json",                       "NON-TERMINATING", "both"),
+    ("examples/test_nonterminate_fixpoint_real.json",                   "NON-TERMINATING", "both"),
+    ("examples/BugOldVars03_1.json",                   			"TERMINATING",     "both",        2),
+    ("examples/only_termination_Ackermann_true-termination1_affine.json","TERMINATING",    "both",        2),
+    ("examples/noInlineTest_nonterminate_GNTA.json",			"NON-TERMINATING", "both", 	  2),
+    ("examples/terminate_in_out_ssa_inconsistency_CountTillBound.json", "TERMINATING",     "both",        2),    
 ]
 
 
@@ -64,8 +73,8 @@ def make_test(file, expected, mode, cpus=1, solver="z3"):
 
 
 # Dynamically build a TestCase class from CASES
-for solver in ["cvc5"]:#, "cvc5"]:
-    attrs = {}
+attrs = {}
+for solver in ["cvc5","z3"]:#, "cvc5"]:
     for entry in CASES:
         file, expected, mode = entry[0], entry[1], entry[2]
         cpus = entry[3] if len(entry) > 3 else 1
@@ -77,9 +86,7 @@ for solver in ["cvc5"]:#, "cvc5"]:
             name = f"{base}_{i}"
             i += 1
         attrs[name] = make_test(file, expected, mode, cpus, solver)
-
 NonRegressionTests = type("NonRegressionTests", (unittest.TestCase,), attrs)
-
 
 if __name__ == "__main__":
     # Write JUnit XML to test-reports/ if xmlrunner is available, else use default runner

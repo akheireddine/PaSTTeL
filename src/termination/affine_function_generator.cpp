@@ -12,7 +12,8 @@ AffineFunctionGenerator::AffineFunctionGenerator(
     for (int i = 0; i < num_vars_; ++i) {
         param_names_.push_back(prefix_ + "_" + std::to_string(i));
     }
-    param_names_.push_back(prefix_ + "_const");
+    constant_name = prefix_ + "_const";
+    param_names_.push_back(constant_name);
 }
 
 // ============================================================================
@@ -20,7 +21,7 @@ AffineFunctionGenerator::AffineFunctionGenerator(
 // ============================================================================
 
 void AffineFunctionGenerator::declareParameters(
-    std::shared_ptr<SMTSolver> solver) const
+    SMTSolverInterface* solver) const
 {
     for (const auto& name : param_names_) {
         solver->declareVariable(name, "Real");
@@ -62,7 +63,7 @@ const std::vector<std::string>& AffineFunctionGenerator::getParamNames() const {
 }
 
 std::vector<double> AffineFunctionGenerator::extractValues(
-    std::shared_ptr<SMTSolver> solver) const
+    SMTSolverInterface* solver) const
 {
     std::vector<double> values;
     for (const auto& p : param_names_) {
@@ -71,12 +72,12 @@ std::vector<double> AffineFunctionGenerator::extractValues(
     return values;
 }
 
-std::vector<std::pair<int64_t, int64_t>> AffineFunctionGenerator::extractRationals(
-    std::shared_ptr<SMTSolver> solver) const
+std::vector<Rational> AffineFunctionGenerator::extractRationals(
+    SMTSolverInterface* solver) const
 {
-    std::vector<std::pair<int64_t, int64_t>> rationals;
+    std::vector<Rational> rationals;
     for (const auto& p : param_names_) {
-        rationals.push_back(solver->getRationalValue(p));
+        rationals.push_back(solver->getRationalValue2(p));
     }
     return rationals;
 }

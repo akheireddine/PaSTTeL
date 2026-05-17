@@ -308,6 +308,41 @@ double SMTSolverCVC5::getValue(const std::string& var_name) {
     return result;
 }
 
+Rational SMTSolverCVC5::getRationalValue2(const std::string& var_name) {
+    if (!variableExists(var_name))
+        throw std::runtime_error("SMTSolverCVC5::getRationalValue2() : variable '" + var_name + "' non declaree");
+
+    cvc5::Term var   = getVariable(var_name);
+    cvc5::Term value = m_solver.getValue(var);
+
+    if (value.getSort().isBoolean()) {
+        return Rational(value.getBooleanValue() ? 1 : 0);
+    }
+
+    if (value.getSort().isInteger()) {
+        // getIntegerValue() returns a decimal string, possibly negative: "-42"
+        return Rational(parseBigInt(value.getIntegerValue()));
+    }
+
+    if (value.getSort().isReal()) {
+        // getRealValue() returns "num/den" (both always positive with sign on num)
+        // e.g. "1/2", "-1/4", "3" (integer-valued real)
+        std::string s = value.getRealValue();
+        size_t slash = s.find('/');
+        if (slash != std::string::npos) {
+            BigInt n = parseBigInt(s.substr(0, slash));
+            BigInt d = parseBigInt(s.substr(slash + 1));
+            if (d < 0) { n = -n; d = -d; }
+            BigInt g = Rational::gcd_ll(absBigInt(n), d);
+            return Rational(n / g, d / g);
+        }
+        // Integer-valued real: no slash
+        return Rational(parseBigInt(s));
+    }
+
+    throw std::runtime_error("SMTSolverCVC5::getRationalValue2() : type non supporte pour " + var_name);
+}
+
 // ============================================================================
 // COMPTEUR D'ASSERTIONS
 // ============================================================================
@@ -367,7 +402,7 @@ bool SMTSolverCVC5::variableExists(const std::string& name) const {
 // CLONAGE
 // ============================================================================
 
-std::shared_ptr<SMTSolver> SMTSolverCVC5::clone() const {
+std::shared_ptr<SMTSolverInterface> SMTSolverCVC5::clone() const {
     // Créer une nouvelle instance avec les mêmes paramètres
     auto cloned = std::make_shared<SMTSolverCVC5>(m_verbose);
 
@@ -655,7 +690,7 @@ cvc5::Term SMTSolverCVC5::buildTerm(const std::string& op, const std::vector<cvc
     if (op == "+") {
         if (args.empty()) throw std::runtime_error("+ requires at least 1 argument");
         if (args.size() == 1) return args[0];  // (+ x) = x
-        Term result = args[0];
+        cvc5::Term result = args[0];
         for (size_t i = 1; i < args.size(); ++i) {
             result = m_tm.mkTerm(Kind::ADD, {result, args[i]});
         }
@@ -671,7 +706,7 @@ cvc5::Term SMTSolverCVC5::buildTerm(const std::string& op, const std::vector<cvc
             return m_tm.mkTerm(Kind::SUB, {args[0], args[1]});
         } else {
             // (- a b c ...) = a - b - c - ...
-            Term result = args[0];
+            cvc5::Term result = args[0];
             for (size_t i = 1; i < args.size(); ++i) {
                 result = m_tm.mkTerm(Kind::SUB, {result, args[i]});
             }
@@ -682,7 +717,7 @@ cvc5::Term SMTSolverCVC5::buildTerm(const std::string& op, const std::vector<cvc
     if (op == "*") {
         if (args.empty()) throw std::runtime_error("* requires at least 1 argument");
         if (args.size() == 1) return args[0];  // (* x) = x
-        Term result = args[0];
+        cvc5::Term result = args[0];
         for (size_t i = 1; i < args.size(); ++i) {
             result = m_tm.mkTerm(Kind::MULT, {result, args[i]});
         }

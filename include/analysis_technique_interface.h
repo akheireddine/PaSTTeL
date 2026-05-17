@@ -29,7 +29,7 @@ struct ProofCertificate {
     std::string proof_details;
     double execution_time_ms = 0.0;
 
-    std::map<std::string, int64_t> rf_witness;        // terminaison : coefficients RF
+    std::map<std::string, Rational> rf_witness;        // terminaison : coefficients RF
     std::map<std::string, double>  nt_witness_state;  // non-terminaison : état témoin
 
     ProofCertificate() = default;
@@ -54,10 +54,9 @@ public:
 
     /**
      * @brief Analyse le programme et retourne le verdict
-     * @param solver Le solveur SMT à utiliser
      * @return AnalysisResult::TERMINATING, NON_TERMINATING, ou UNKNOWN
      */
-    virtual AnalysisResult analyze(std::shared_ptr<SMTSolver> solver) = 0;
+    virtual AnalysisResult analyze() = 0;
 
     /**
      * @brief Retourne le certificat de preuve du dernier appel à analyze()
@@ -75,6 +74,12 @@ public:
     virtual bool validateConfiguration() const { return true; }
 
     /**
+     * @brief Returns true if the technique needs a linearized LassoProgram.
+     * Techniques returning false can run on the raw (non-linearized) lasso.
+     */
+    virtual bool requiresLinearization() const { return true; }
+
+    /**
      * @brief Demande l'annulation de la technique (pour parallélisation)
      */
     virtual void cancel() {}
@@ -83,6 +88,9 @@ public:
      * @brief Indique si la technique peut être annulée
      */
     virtual bool canBeCancelled() const { return true; }
+
+protected:
+    SMTSolverInterface* solver_;
 };
 
 #endif // ANALYSIS_TECHNIQUE_INTERFACE_H
