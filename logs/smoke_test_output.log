@@ -1,0 +1,177 @@
+============================================================
+ PaSTTeL Artifact — Smoke Test
+============================================================
+ Benchmark dir  : /app/benchmarks/smoke_test/full_programs_c_bpl
+ Output dir     : /app/output/smoke
+ PaSTTeL timeout: 120s (sequential, --cpus 1)
+ Solvers        : Z3 (Fig.6, paper) + CVC5 (Fig.7, paper)
+ Supported cats : ALL_INT_VARS BOOLEAN_OP REAL_VARS
+============================================================
+ Delete old /app/output/smoke directory...
+============================================================
+
+[1/4] Running Ultimate Buchi Automizer (ULR-Baseline) on smoke test programs...
+      (each program: up to 120s)
+
+  → 2Nested-1.c
+    1 trace(s) — ULR-Baseline results:
+    lasso_trace_1.txt                                       → TERMINATING        |  400.79ms
+  → AliasDarteFeautrierGonnord-SAS2010-counterex1b_true-termination.c
+    6 trace(s) — ULR-Baseline results:
+    lasso_trace_1.txt                                       → INFEASIBLE         |  0.00ms
+    lasso_trace_2.txt                                       → TERMINATING        |  162.76ms
+    lasso_trace_3.txt                                       → TERMINATING        |  303.76ms
+    lasso_trace_4.txt                                       → TERMINATING        |  289.64ms
+    lasso_trace_5.txt                                       → TERMINATING        |  248.39ms
+    lasso_trace_6.txt                                       → TERMINATING        |  2237.34ms
+  → java_DivMinus1.c
+    1 trace(s) — ULR-Baseline results:
+    lasso_trace_1.txt                                       → TERMINATING        |  180.72ms
+  → recursive.c
+    1 trace(s) — ULR-Baseline results:
+    lasso_trace_1.txt                                       → NONTERMINATING     |  3.02ms
+  → ATVA2013-nonIntegral-real.bpl
+    1 trace(s) — ULR-Baseline results:
+    lasso_trace_1.txt                                       → NONTERMINATING     |  4.91ms
+  → Fibonacci.bpl
+    1 trace(s) — ULR-Baseline results:
+    lasso_trace_1.txt                                       → NONTERMINATING     |  188.78ms
+  → LTL_Coolant_Nonterminating01.bpl
+    1 trace(s) — ULR-Baseline results:
+    lasso_trace_1.txt                                       → NONTERMINATING     |  74.89ms
+  → Lobnya-Boolean.bpl
+    1 trace(s) — ULR-Baseline results:
+    lasso_trace_1.txt                                       → TERMINATING        |  99.23ms
+  → NonterminationDifficult05_ComplexEigenvalues.bpl
+    1 trace(s) — ULR-Baseline results:
+    lasso_trace_1.txt                                       → NONTERMINATING     |  48.79ms
+  → loopWithBreak.bpl
+    1 trace(s) — ULR-Baseline results:
+    lasso_trace_1.txt                                       → TERMINATING        |  133.31ms
+
+[2/4] Classifying lasso traces...
+
+Classifying 15 files...
+
+=== Classification terminee ===
+  UNKNOWN_LOOP         : 0 fichier(s)
+  BOOLEAN_OP           : 6 fichier(s)
+  ARRAY_OP             : 0 fichier(s)
+  REAL_VARS            : 2 fichier(s)
+  FUNCT_SIGNATURE      : 0 fichier(s)
+  UNDEF_TYPE           : 0 fichier(s)
+  SI_ARRAYS            : 0 fichier(s)
+  ALL_INT_VARS         : 7 fichier(s)
+  OTHERS               : 0 fichier(s)
+
+[3/4] Running PaSTTeL on supported categories (ALL_INT_VARS, BOOLEAN_OP, REAL_VARS)...
+      PaSTTeL runs sequentially (--cpus 1)
+
+  ┌─────────────────────────────────────────┐
+  │  Solver: Z3                             │
+  └─────────────────────────────────────────┘
+  Category: ALL_INT_VARS
+  → lasso_traces_2Nested-1.c
+    1 trace(s) — P-ULR results:
+    lasso_trace_1.txt                                       → TERMINATING         |  14.00 ms
+  → lasso_traces_AliasDarteFeautrierGonnord-SAS2010-counterex1b_true-termination.c
+    1 trace(s) — P-ULR results:
+  → lasso_traces_Fibonacci.bpl
+    1 trace(s) — P-ULR results:
+    lasso_trace_1.txt                                       → NONTERMINATING      |  3.00 ms
+  → lasso_traces_LTL_Coolant_Nonterminating01.bpl
+    1 trace(s) — P-ULR results:
+    lasso_trace_1.txt                                       → NONTERMINATING      |  3.00 ms
+  → lasso_traces_java_DivMinus1.c
+    1 trace(s) — P-ULR results:
+    lasso_trace_1.txt                                       → TERMINATING         |  11.00 ms
+  → lasso_traces_loopWithBreak.bpl
+    1 trace(s) — P-ULR results:
+    lasso_trace_1.txt                                       → TERMINATING         |  10.00 ms
+  → lasso_traces_recursive.c
+    1 trace(s) — P-ULR results:
+    lasso_trace_1.txt                                       → NONTERMINATING      |  1.00 ms
+  Category: BOOLEAN_OP
+  → lasso_traces_AliasDarteFeautrierGonnord-SAS2010-counterex1b_true-termination.c
+    5 trace(s) — P-ULR results:
+    lasso_trace_2.txt                                       → TERMINATING         |  7.00 ms
+    lasso_trace_3.txt                                       → TERMINATING         |  8.00 ms
+    lasso_trace_4.txt                                       → TERMINATING         |  8.00 ms
+    lasso_trace_5.txt                                       → TERMINATING         |  7.00 ms
+    lasso_trace_6.txt                                       → UNKNOWN             |  -1.00 ms
+  → lasso_traces_Lobnya-Boolean.bpl
+    1 trace(s) — P-ULR results:
+    lasso_trace_1.txt                                       → TERMINATING         |  7.00 ms
+  Category: REAL_VARS
+  → lasso_traces_ATVA2013-nonIntegral-real.bpl
+    1 trace(s) — P-ULR results:
+    lasso_trace_1.txt                                       → NONTERMINATING      |  2.00 ms
+  → lasso_traces_NonterminationDifficult05_ComplexEigenvalues.bpl
+    1 trace(s) — P-ULR results:
+    lasso_trace_1.txt                                       → NONTERMINATING      |  4.00 ms
+
+  ┌─────────────────────────────────────────┐
+  │  Solver: CVC5                           │
+  └─────────────────────────────────────────┘
+  Category: ALL_INT_VARS
+  → lasso_traces_2Nested-1.c
+    1 trace(s) — P-ULR results:
+    lasso_trace_1.txt                                       → TERMINATING         |  27.00 ms
+  → lasso_traces_AliasDarteFeautrierGonnord-SAS2010-counterex1b_true-termination.c
+    1 trace(s) — P-ULR results:
+  → lasso_traces_Fibonacci.bpl
+    1 trace(s) — P-ULR results:
+    lasso_trace_1.txt                                       → NONTERMINATING      |  5.00 ms
+  → lasso_traces_LTL_Coolant_Nonterminating01.bpl
+    1 trace(s) — P-ULR results:
+    lasso_trace_1.txt                                       → NONTERMINATING      |  7.00 ms
+  → lasso_traces_java_DivMinus1.c
+    1 trace(s) — P-ULR results:
+    lasso_trace_1.txt                                       → TERMINATING         |  19.00 ms
+  → lasso_traces_loopWithBreak.bpl
+    1 trace(s) — P-ULR results:
+    lasso_trace_1.txt                                       → TERMINATING         |  18.00 ms
+  → lasso_traces_recursive.c
+    1 trace(s) — P-ULR results:
+    lasso_trace_1.txt                                       → NONTERMINATING      |  3.00 ms
+  Category: BOOLEAN_OP
+  → lasso_traces_AliasDarteFeautrierGonnord-SAS2010-counterex1b_true-termination.c
+    5 trace(s) — P-ULR results:
+    lasso_trace_2.txt                                       → TERMINATING         |  14.00 ms
+    lasso_trace_3.txt                                       → TERMINATING         |  13.00 ms
+    lasso_trace_4.txt                                       → TERMINATING         |  14.00 ms
+    lasso_trace_5.txt                                       → TERMINATING         |  12.00 ms
+    lasso_trace_6.txt                                       → UNKNOWN             |  -1.00 ms
+  → lasso_traces_Lobnya-Boolean.bpl
+    1 trace(s) — P-ULR results:
+    lasso_trace_1.txt                                       → TERMINATING         |  12.00 ms
+  Category: REAL_VARS
+  → lasso_traces_ATVA2013-nonIntegral-real.bpl
+    1 trace(s) — P-ULR results:
+    lasso_trace_1.txt                                       → NONTERMINATING      |  3.00 ms
+  → lasso_traces_NonterminationDifficult05_ComplexEigenvalues.bpl
+    1 trace(s) — P-ULR results:
+    lasso_trace_1.txt                                       → NONTERMINATING      |  8.00 ms
+
+
+[4/4] Generating scatter plots...
+
+============================================================
+ Smoke test complete.
+------------------------------------------------------------
+ Data files:
+   CSV (Z3)   : /app/output/smoke/smoke_results_P-ULR-Seq_z3.csv
+   CSV (CVC5) : /app/output/smoke/smoke_results_P-ULR-Seq_cvc5.csv
+
+ Comparison tables [paper]:
+   ULR-Baseline vs P-ULR-Seq: First table /app/output/smoke/summary_tables.log
+   P-ULR-Seq (Z3) vs P-ULR-Seq (CVC5): Second table /app/output/smoke/summary_tables.log
+
+ Fig.6 — ULR-Baseline vs P-ULR-Seq (Z3)  [paper]:
+   HTML : /app/output/smoke/smoke_results_P-ULR-Seq_z3_scatter.html
+   PDF  : /app/output/smoke/smoke_results_P-ULR-Seq_z3_scatter.pdf
+
+ Fig.7 — Z3 vs CVC5 on P-ULR-Seq  [paper]:
+   HTML : /app/output/smoke/smoke_z3_vs_cvc5.html
+   PDF  : /app/output/smoke/smoke_z3_vs_cvc5.pdf
+============================================================
