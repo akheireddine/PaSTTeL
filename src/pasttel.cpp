@@ -261,8 +261,6 @@ void printAnalysisReport(const AnalysisReport& report) {
     // Afficher le résultat global
     std::cout << "============================================================\n";
     std::cout << "OVERALL RESULT: " << report.overall_result << "\n";
-    std::cout << "TOTAL TIME: " << std::fixed << std::setprecision(3)
-              << (report.total_time_ms / 1000.0) << " s\n";
 
     if (!report.termination_results.empty()) {
         std::cout << "TERMINATING TIME: " << std::fixed << std::setprecision(3)

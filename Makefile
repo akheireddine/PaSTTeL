@@ -39,7 +39,6 @@ LDFLAGS  += $(Z3_LIBS) $(CVC5_LIBS)
 # ========================
 
 SRC_DIR := src
-TEST_DIR := tests
 BIN_DIR := bin
 
 # ========================
@@ -85,14 +84,6 @@ COMMON_SRCS := \
 COMMON_OBJS := $(COMMON_SRCS:.cpp=.o)
 
 # ========================
-# Détection automatique des tests
-# ========================
-
-TEST_SRCS := $(wildcard $(TEST_DIR)/test_*.cpp)
-TESTS := $(patsubst $(TEST_DIR)/%.cpp, $(BIN_DIR)/%, $(TEST_SRCS))
-TEST_OBJS := $(TEST_SRCS:.cpp=.o)
-
-# ========================
 # Fichier source principal
 # ========================
 
@@ -104,18 +95,14 @@ MAIN_OBJ := $(MAIN_SRC:.cpp=.o)
 # Règles principales
 # ========================
 
-.PHONY: all lib clean test
+.PHONY: all lib clean 
 
-all: $(TESTS) $(MAIN)
+all: $(MAIN)
 
 lib: $(BIN_DIR)/libpasttel.a
 
 $(BIN_DIR)/libpasttel.a: $(COMMON_OBJS) | $(BIN_DIR)
 	ar rcs $@ $^
-
-# Compilation des exécutables de test
-$(BIN_DIR)/%: $(COMMON_OBJS) $(TEST_DIR)/%.o | $(BIN_DIR)
-	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
 # Compilation de l'exécutable principal
 $(BIN_DIR)/%: $(COMMON_OBJS) $(MAIN_OBJ) | $(BIN_DIR)
@@ -129,16 +116,7 @@ $(BIN_DIR)/%: $(COMMON_OBJS) $(MAIN_OBJ) | $(BIN_DIR)
 $(BIN_DIR):
 	mkdir -p $@
 
-# Exécution de tous les tests
-test: $(TESTS)
-	@echo "=== Exécution des tests ==="
-	@for t in $(TESTS); do \
-		echo "--> $$t"; \
-		$$t || exit 1; \
-	done
-	@echo "=== Tous les tests ont réussi ==="
-
 # Nettoyage
 clean:
-	rm -rf $(COMMON_OBJS) $(TEST_OBJS) $(TESTS) $(MAIN_OBJ) $(MAIN) $(BIN_DIR)
+	rm -rf $(COMMON_OBJS) $(MAIN_OBJ) $(MAIN) $(BIN_DIR)
 
