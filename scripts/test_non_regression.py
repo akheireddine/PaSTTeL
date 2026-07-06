@@ -54,6 +54,15 @@ CASES = [
     ("examples/only_termination_Ackermann_true-termination1_affine.json","TERMINATING",    "both",        2),
     ("examples/noInlineTest_nonterminate_GNTA.json",			"NON-TERMINATING", "both", 	  2),
     ("examples/terminate_in_out_ssa_inconsistency_CountTillBound.json", "TERMINATING",     "both",        2),    
+    ("examples/unused_variables_tqli.t2.json", 				"TERMINATING",     "both",        2),    
+    ("examples/unused_variables_ChenFlurMukhopadhyay-SAS2012-Ex2.22.json","TERMINATING",   "both",        2),    
+    ("examples/scientific_notation_s3_srvr_14_false-unreach.json",	"NON-TERMINATING", "both",        2),    
+    ("examples/polyrank4.t2_2nested.json",				"TERMINATING",     "both",        2),    
+    ("examples/let_op_fixpoint_RanFile023.json",			"NON-TERMINATING", "both",        2),    
+    ("examples/affine_rf_with_div_aux.json",				"TERMINATING",     "both",        2),    
+    ("examples/DivMinus2_no-overflow_term.json",			"TERMINATING",     "both",        2),    
+    ("examples/CallNTimes_bpl_gnta.json",				"NON-TERMINATING", "both",        2),    
+    ("examples/threadpooling_product_WithProcedures_gnta.json", 	"NON-TERMINATING", "both",        2),    
 ]
 
 
