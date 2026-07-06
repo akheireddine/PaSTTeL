@@ -15,13 +15,13 @@
  * @brief Summary of a complete portfolio analysis run
  */
 struct AnalysisReport {
-    std::vector<ProofCertificate> termination_results;
-    std::vector<ProofCertificate> nontermination_results;
+    std::vector<ProofCertificate> all_results;  // all techniques that completed (any status)
     ProofCertificate winner;
     std::string overall_result = "UNKNOWN";
     double total_time_ms = 0.0;
     double terminating_time_ms = 0.0;
     double nonterminating_time_ms = 0.0;
+    std::vector<std::string> registered_techniques;
 
     bool isTerminating() const {
         return winner.status == AnalysisResult::TERMINATING;
@@ -53,7 +53,7 @@ class PortfolioOrchestrator {
 public:
     explicit PortfolioOrchestrator(int max_threads);
 
-    void addTechnique(std::unique_ptr<AnalysisTechniqueInterface> technique);
+    void addTechnique(std::unique_ptr<AnalysisInterface> technique);
 
     /**
      * @brief Enqueue all techniques in a fresh ThreadPool. Returns immediately.
@@ -84,7 +84,7 @@ private:
 
     // ── Configuration ──────────────────────────────────────────
     int max_threads_;
-    std::vector<std::unique_ptr<AnalysisTechniqueInterface>> techniques_;
+    std::vector<std::unique_ptr<AnalysisInterface>> techniques_;
 
     // ── Per-solve state ────────────────────────────────────────
     std::unique_ptr<ThreadPool>  pool_;

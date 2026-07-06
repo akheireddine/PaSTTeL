@@ -42,9 +42,9 @@ struct ProofCertificate {
 /**
  * @brief Interface unifiée pour toutes les techniques d'analyse
  */
-class AnalysisTechniqueInterface {
+class AnalysisInterface {
 public:
-    virtual ~AnalysisTechniqueInterface() = default;
+    virtual ~AnalysisInterface() = default;
 
     /**
      * @brief Initialise la technique avec le programme lasso
@@ -82,7 +82,9 @@ public:
     /**
      * @brief Demande l'annulation de la technique (pour parallélisation)
      */
-    virtual void cancel() {}
+    virtual void cancel() {
+        if (solver_) solver_->interrupt();
+    }
 
     /**
      * @brief Indique si la technique peut être annulée

@@ -168,13 +168,22 @@ std::string setParameters(int argc, char** argv) {
  * @brief Affiche un tableau parsable des résultats d'analyse
  */
 void printAnalysisReport(const AnalysisReport& report) {
+    std::vector<ProofCertificate> termination_results;
+    std::vector<ProofCertificate> nontermination_results;
     std::cout << "\n";
     std::cout << "============================================================\n";
     std::cout << "                    ANALYSIS REPORT                         \n";
     std::cout << "============================================================\n\n";
 
+    for (const auto& r : report.all_results) {
+        if (r.status == AnalysisResult::TERMINATING)
+            termination_results.push_back(r);
+        else if (r.status == AnalysisResult::NON_TERMINATING)
+            nontermination_results.push_back(r);
+    }
+
     // Afficher les résultats de terminaison
-    if (!report.termination_results.empty()) {
+    if (!termination_results.empty()) {
         std::cout << "--- TERMINATION TECHNIQUES ---\n";
         std::cout << std::left
                 << std::setw(35) << "Technique"
@@ -183,7 +192,7 @@ void printAnalysisReport(const AnalysisReport& report) {
                 << "Proof\n";
         std::cout << std::string(80, '-') << "\n";
 
-        for (const auto& result : report.termination_results) {
+        for (const auto& result : termination_results) {
             bool is_terminating = (result.status == AnalysisResult::TERMINATING);
             std::cout << std::left
                     << std::setw(35) << result.technique_name
@@ -215,7 +224,7 @@ void printAnalysisReport(const AnalysisReport& report) {
     }
 
     // Afficher les résultats de non-terminaison
-    if (!report.nontermination_results.empty()) {
+    if (!nontermination_results.empty()) {
         std::cout << "--- NON-TERMINATION TECHNIQUES ---\n";
         std::cout << std::left
                   << std::setw(35) << "Technique"
@@ -224,7 +233,7 @@ void printAnalysisReport(const AnalysisReport& report) {
                   << "Proof\n";
         std::cout << std::string(80, '-') << "\n";
 
-        for (const auto& result : report.nontermination_results) {
+        for (const auto& result : nontermination_results) {
             bool is_nonterminating = (result.status == AnalysisResult::NON_TERMINATING);
             std::cout << std::left
                     << std::setw(35) << result.technique_name
@@ -258,17 +267,39 @@ void printAnalysisReport(const AnalysisReport& report) {
         std::cout << "\n";
     }
 
-    // Afficher le résultat global
+    auto fmt_s = [](double ms) -> std::string {
+        std::ostringstream oss;
+        oss << std::fixed << std::setprecision(3) << (ms / 1000.0) << " s";
+        return oss.str();
+    };
+
+    auto find_time = [&](const std::string& name) -> std::string {
+        for (const auto& r : report.all_results)
+            if (r.technique_name.find(name, 0) != std::string::npos)
+                return fmt_s(r.execution_time_ms);
+        return "-";
+    };
+
     std::cout << "============================================================\n";
     std::cout << "OVERALL RESULT: " << report.overall_result << "\n";
+    std::cout << "TOTAL TIME: " << fmt_s(report.total_time_ms) << "\n";
 
-    if (!report.termination_results.empty()) {
-        std::cout << "TERMINATING TIME: " << std::fixed << std::setprecision(3)
-                    << (report.terminating_time_ms / 1000.0) << " s\n";
-    }
-    if (!report.nontermination_results.empty()) {
-        std::cout << "NON-TERMINATING TIME: " << std::fixed << std::setprecision(3)
-                    << (report.nonterminating_time_ms / 1000.0) << " s\n";
+    if (!report.registered_techniques.empty()) {
+        std::cout << "TESTED STRATEGIES :\n";
+        for (const auto& name : report.registered_techniques) {
+            std::string label;
+            if (name == "Fixpoint")
+                label = "FIXPOINT";
+            else if (name.rfind("Geometric", 0) == 0)
+                label = "GNTA";
+            else if (name == "RankingBased(AffineTemplate)")
+                label = "AFFINE";
+            else if (name.find("NestedTemplate") != std::string::npos)
+                label = "NESTED";
+            else
+                label = name;
+            std::cout << "  - " << label << " TIME: " << find_time(name) << "\n";
+        }
     }
     std::cout << "============================================================\n";
 }
@@ -307,11 +338,7 @@ AnalysisReport runAnalysis(LassoProgram& lasso) {
         orchestrator.addTechnique(std::make_unique<RankingBasedTechnique>(createSMTSolver(),
             "AffineTemplate", configs));
         orchestrator.addTechnique(std::make_unique<RankingBasedTechnique>(createSMTSolver(),
-            "NestedTemplate", configs, 2));
-        orchestrator.addTechnique(std::make_unique<RankingBasedTechnique>(createSMTSolver(),
-            "NestedTemplate", configs, 3));
-        orchestrator.addTechnique(std::make_unique<RankingBasedTechnique>(createSMTSolver(),
-            "NestedTemplate", configs, 4));
+            "NestedTemplate", configs, 2, 5));
     }
 
     orchestrator.solve(lasso);
@@ -331,7 +358,7 @@ int main(int argc, char** argv) {
     std::string lasso_file = setParameters(argc, argv);
     LassoProgram lasso;
     try{
-        lasso = JsonTraceParser::parseToLasso(lasso_file, true);
+        lasso = JsonTraceParser::parseToLasso(lasso_file, false);
     } catch (const std::exception& e) {
         std::cerr << "Error: Failed to parse Lasso file: " << e.what() << std::endl;
         return 1;
@@ -341,10 +368,28 @@ int main(int argc, char** argv) {
     if (verbose) {
         for(auto& v : lasso.program_vars)
             std::cout << "Program vars: " << v << " ";
+        std::cout<< "\n=== RAW STEM ===\n";
+        std::cout<< lasso.stem.raw_formula << std::endl;
+        std::cout<< "\n=== RAW LOOP ===\n";
+        std::cout<< lasso.loop.raw_formula << std::endl;
+
         std::cout<< "\n=== STEM SMT ===\n";
         std::cout << lasso.stem.toSMTLib2() << std::endl;
+        std::cout<<"\t InVars: ";
+        for(auto& [var, ssa] : lasso.stem.var_to_ssa_in)
+            std::cout << var << " -> " << ssa << "\n\t\t";
+        std::cout<<"\n\t OutVars: ";
+        for(auto& [var, ssa] : lasso.stem.var_to_ssa_out)
+            std::cout << var << " -> " << ssa << "\n\t\t";
         std::cout<< "\n=== LOOP SMT ===\n";
         std::cout << lasso.loop.toSMTLib2() << std::endl;
+        std::cout<<"\t InVars: ";
+        for(auto& [var, ssa] : lasso.loop.var_to_ssa_in)
+            std::cout << var << " -> " << ssa << "\n\t\t";
+        std::cout<<"\n\t OutVars: ";
+        for(auto& [var, ssa] : lasso.loop.var_to_ssa_out)
+            std::cout << var << " -> " << ssa << "\n\t\t";
+        std::cout << "\n";
     }
 
     auto total_start = std::chrono::high_resolution_clock::now();

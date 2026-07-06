@@ -270,6 +270,9 @@ void SMTSolverZ3::addAssertion(const std::string &assertion)
 
 bool SMTSolverZ3::checkSat()
 {
+    if (m_interrupted)
+        return false;
+
     if (m_verbose)
     {
         std::cout << "[Z3] Vérification de la satisfiabilité..." << std::endl;

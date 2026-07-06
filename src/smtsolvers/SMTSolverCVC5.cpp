@@ -1,8 +1,11 @@
 #include <iostream>
 #include <sstream>
+#include <iomanip>
+#include <cmath>
 #include <stdexcept>
 #include <cctype>
 #include <mutex>
+#include <atomic>
 
 #include "smtsolvers/SMTSolverCVC5.h"
 
@@ -227,6 +230,7 @@ void SMTSolverCVC5::addAssertion(const std::string& assertion) {
 // ============================================================================
 
 bool SMTSolverCVC5::checkSat() {
+    if (m_interrupted.load(std::memory_order_relaxed)) return false;
     if (m_verbose) {
         std::cout << "[CVC5] Vérification de la satisfiabilité..." << std::endl;
     }
@@ -364,7 +368,7 @@ cvc5::Term SMTSolverCVC5::getVariable(const std::string& name) {
 }
 
 void SMTSolverCVC5::interrupt() {
-    // m_solver.interrupt();
+    m_interrupted.store(true, std::memory_order_relaxed);
     if (m_verbose) {
         std::cout << "[CVC5] CheckSat interrompu" << std::endl;
     }
@@ -556,6 +560,39 @@ cvc5::Term SMTSolverCVC5::parseSexpTokensWithBindings(
             return parseQuantifier(op, tokens, pos, bound_vars);
         }
 
+        // Cas spécial: let ((name expr) ...) body
+        if (op == "let") {
+            // Expects: '(' (name expr)* ')' body ')'
+            if (pos >= tokens.size() || tokens[pos] != "(")
+                throw std::runtime_error("let: expected '(' before binding list");
+            pos++; // consume '('
+
+            std::map<std::string, cvc5::Term> new_bound_vars = bound_vars;
+            while (pos < tokens.size() && tokens[pos] != ")") {
+                if (tokens[pos] != "(")
+                    throw std::runtime_error("let: expected '(' before binding pair");
+                pos++; // consume '('
+                if (pos >= tokens.size())
+                    throw std::runtime_error("let: incomplete binding");
+                std::string name = tokens[pos++];
+                cvc5::Term val = parseSexpTokensWithBindings(tokens, pos, bound_vars);
+                if (pos >= tokens.size() || tokens[pos] != ")")
+                    throw std::runtime_error("let: missing ')' after binding value");
+                pos++; // consume ')'
+                new_bound_vars[name] = val;
+            }
+            if (pos >= tokens.size() || tokens[pos] != ")")
+                throw std::runtime_error("let: missing ')' after binding list");
+            pos++; // consume closing ')' of binding list
+
+            cvc5::Term body = parseSexpTokensWithBindings(tokens, pos, new_bound_vars);
+
+            if (pos >= tokens.size() || tokens[pos] != ")")
+                throw std::runtime_error("let: missing ')' after body");
+            pos++; // consume closing ')' of let
+            return body;
+        }
+
         // Collecter les arguments
         std::vector<cvc5::Term> args;
         while (pos < tokens.size() && tokens[pos] != ")") {
@@ -594,7 +631,22 @@ cvc5::Term SMTSolverCVC5::parseSexpTokensWithBindings(
 
     // Nombre
     if (std::isdigit(token[0]) || (token[0] == '-' && token.length() > 1)) {
-        if (token.find('.') != std::string::npos) {
+        bool has_dot = token.find('.') != std::string::npos;
+        bool has_exp = token.find('e') != std::string::npos || token.find('E') != std::string::npos;
+        if (has_exp) {
+            // CVC5 mkReal/mkInteger reject scientific notation — convert to fixed-point
+            double v = std::stod(token);
+            double intpart;
+            std::ostringstream oss;
+            if (std::modf(v, &intpart) == 0.0) {
+                oss << std::fixed << std::setprecision(0) << v;
+                return m_tm.mkInteger(oss.str());
+            } else {
+                oss << std::fixed << std::setprecision(10) << v;
+                return m_tm.mkReal(oss.str());
+            }
+        }
+        if (has_dot) {
             return m_tm.mkReal(token);
         } else {
             return m_tm.mkInteger(token);

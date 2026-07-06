@@ -18,7 +18,7 @@ PortfolioOrchestrator::PortfolioOrchestrator(int max_threads)
     : max_threads_(max_threads) {}
 
 void PortfolioOrchestrator::addTechnique(
-    std::unique_ptr<AnalysisTechniqueInterface> technique)
+    std::unique_ptr<AnalysisInterface> technique)
 {
     if (technique->requiresLinearization())
         // insert at the end to prioritize techniques that can run on the raw lasso
@@ -45,6 +45,11 @@ void PortfolioOrchestrator::runTechnique(size_t i, const LassoProgram& lasso)
     }
 
     technique.init(lasso);
+
+    if (stop_early_.load(std::memory_order_relaxed)) {
+        log(verbose, "[" + name + "] Skipped (conclusive result already found)");
+        return;
+    }
 
     if (!technique.validateConfiguration()) {
         log(verbose, "[" + name + "] Invalid configuration, skipping");
@@ -165,7 +170,9 @@ AnalysisReport PortfolioOrchestrator::join(int timelimit_seconds)
         pool_->waitAll();
     }
 
-    pool_.reset(); // destroy the pool (joins all workers)
+    if (conclusive_found_.load())
+        pool_->killAll();  // result found: kill threads immediately (don't wait for init())
+    pool_.reset();
 
     if (!conclusive_found_.load()) {
         log(verbose, timed_out
@@ -182,10 +189,7 @@ AnalysisReport PortfolioOrchestrator::join(int timelimit_seconds)
     report.winner = final_result_;
 
     for (const auto& r : all_results_) {
-        if      (r.status == AnalysisResult::TERMINATING)
-            report.termination_results.push_back(r);
-        else if (r.status == AnalysisResult::NON_TERMINATING)
-            report.nontermination_results.push_back(r);
+        report.all_results.push_back(r);
     }
 
     if (final_result_.status == AnalysisResult::TERMINATING) {
@@ -195,6 +199,9 @@ AnalysisReport PortfolioOrchestrator::join(int timelimit_seconds)
         report.overall_result         = "NON-TERMINATING";
         report.nonterminating_time_ms = final_result_.execution_time_ms;
     }
+
+    for (const auto& t : techniques_)
+        report.registered_techniques.push_back(t->getName());
 
     return report;
 }
